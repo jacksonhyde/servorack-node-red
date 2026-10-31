@@ -5,4 +5,5 @@ RUN apk add --no-cache alsa-lib alsa-utils \
     && apk add --no-cache --virtual .midi-build python3 make g++ linux-headers alsa-lib-dev \
     && npm install --prefix /usr/src/node-red --omit=dev --no-audit --no-fund --save-exact node-red-contrib-midi@1.1.2 @flowfuse/node-red-dashboard@1.34.1 \
     && apk del .midi-build
+COPY servorack-midi /usr/src/node-red/node_modules/node-red-contrib-servorack-midi
 USER node-red

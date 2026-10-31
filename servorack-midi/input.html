@@ -1,0 +1,5 @@
+<script type="text/javascript">
+RED.nodes.registerType('servorack midi input',{category:'input',color:'#d8bfd8',defaults:{name:{value:''}},inputs:1,outputs:2,icon:'bridge.svg',label:function(){return this.name||'Dashboard MIDI input';},outputLabels:['MIDI messages','disarm']});
+</script>
+<script type="text/html" data-template-name="servorack midi input"><div class="form-row"><label for="node-input-name">Name</label><input id="node-input-name" type="text"></div></script>
+<script type="text/html" data-help-name="servorack midi input"><p>Lists every RtMidi input on the dashboard. Selection is persistent. Device changes and loss disarm servo control. Reconnection never arms automatically.</p></script>
