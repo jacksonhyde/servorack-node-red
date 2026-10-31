@@ -33,6 +33,9 @@ module.exports = function(RED) {
                         next.ignoreTypes(false,false,false);
                         next.on('message',(_,raw)=>{ if (input===next) node.send([{payload:raw.slice(1),midi:{raw:raw.slice()}},null]); });
                         next.openPort(port.index); input=next; identity=port.name;
+                        flow.set('wsMidiSource','oxygen'); flow.set('wsMidiRun',null);
+                        flow.set('oxygenPending',{}); flow.set('wsHeartbeats',true);
+                        node.send([null,{topic:'disarm'}]);
                     } catch(e) { next.closePort(); throw e; }
                 }
                 flow.set('midiDevices',ports.map(p=>({title:p.name,value:p.key})));
