@@ -7,7 +7,12 @@
 
 services:
   node-red:
-    image: nodered/node-red:latest
+    build: .
+    image: servorack-node-red-midi:local
+    devices:
+      - /dev/snd/seq:/dev/snd/seq
+    group_add:
+      - "${MIDI_AUDIO_GID:-29}" # Host audio group; ALSA sequencer access
     environment:
       - TZ=Europe/Amsterdam
     ports:
