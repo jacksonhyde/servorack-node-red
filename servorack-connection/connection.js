@@ -3,7 +3,10 @@ module.exports = function(RED) {
     const {randomUUID} = require('crypto');
     function address(value) {
         if (typeof value !== 'string' || !value.trim()) throw new Error('Enter a rack address');
-        const text=value.trim(), url=new URL(text.includes('://')?text:'ws://'+text);
+        const text=value.trim();
+        let url;
+        try { url=new URL(text.includes('://')?text:'ws://'+text); }
+        catch(_) { throw new Error('Enter a valid rack address'); }
         if (url.protocol!=='ws:' || url.username || url.password || url.search || url.hash ||
             !['/','/servorack/control'].includes(url.pathname)) throw new Error('Use a rack address or ws://host/servorack/control');
         url.pathname='/servorack/control';
@@ -25,7 +28,7 @@ module.exports = function(RED) {
             }
         }
         function status(state,detail='') {
-            const value={address:target,state,device:active && active.device || '',detail};
+            const value={address:target,state,wanted,device:active && active.device || '',detail};
             flow.set('rackConnection',value);
             node.status({fill:state==='connected'?'green':state==='disconnected'?'grey':'yellow',
                 shape:'dot',text:state+(detail?': '+detail:'')});
@@ -103,14 +106,20 @@ module.exports = function(RED) {
             if (msg.topic==='rack-connect') {
                 let next;
                 try { next=address(msg.payload); }
-                catch(e) { node.warn(e.message); if(done)done(); return; }
+                catch(e) {
+                    node.warn(e.message);
+                    node.send([null,{topic:'rack-error',_client:msg._client,payload:{message:e.message}}]);
+                    if(done)done(); return;
+                }
                 stop(); target=next; wanted=true; delay=500;
                 flow.set('rackAddress',target,'servorack');
                 flow.set('rackAutoConnect',true,'servorack');
                 connect();
+                node.send([null,{topic:'rack-selected',_client:msg._client,payload:{address:target}}]);
             } else if (msg.topic==='rack-disconnect') {
                 wanted=false; flow.set('rackAutoConnect',false,'servorack');
                 stop(); status('disconnected');
+                node.send([null,{topic:'rack-selected',_client:msg._client,payload:{address:target}}]);
             } else {
                 const c=active;
                 if (!c || !c.opened || !c.token || !msg._session ||

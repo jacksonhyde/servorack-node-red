@@ -60,15 +60,17 @@ learned mappings survive. Select the source and explicitly Arm after recovery.
 The `servorack-connection` custom node connects from this backend to
 `ws://<rack-ip>/servorack/control`; the rack IP is displayed on its LCD.
 Rebuild the image, then import the firmware repository's updated
-`examples/node-red/websocket-control.json`. Set the initial IP address in its
-**Rack connection** node and deploy. Deploy this worksheet before flashing the
+`examples/node-red/websocket-control.json` and deploy. Open the MIDI Mapping
+dashboard, enter the IP in **Rack address**, and click **Connect**. Deploy this worksheet before flashing the
 ESP-hosted WebSocket server firmware; it replaces the old incoming endpoint.
 
 The latest runtime address is saved in the existing named `servorack` context
 store. Send topic `rack-connect` with an address string to select/reconnect,
 or topic `rack-disconnect` to stop and remember that preference. A connected
 selection reconnects automatically after a backend restart; browser closure
-has no effect. Dashboard address controls are the following migration step.
+has no effect. Dashboard Connect/Disconnect controls show status and inline
+address errors. Disconnect retains the address while stopping automatic retries.
+An invalid new address leaves the active connection intact.
 
 Reconnects never arm or replay commands. Disconnects clear pending MIDI,
 learning and profile reads; an interrupted profile save requires verification
