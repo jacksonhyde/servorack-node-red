@@ -4,10 +4,12 @@ module.exports = function(RED) {
     RED.nodes.registerType('servorack midi input', function(config) {
         RED.nodes.createNode(this, config);
         const node=this, flow=node.context().flow;
-        let input=null, identity=null, ports=[], closed=false;
+        // closePort() leaves the native ALSA client allocated; reuse both handles.
+        let input=null, receiver=null, probe=null, generation=0, identity=null, ports=[], closed=false;
         const stable = name => name.replace(/ \d+:\d+$/, '');
         let selected=flow.get('midiDevice','servorack') || '';
         function stop() {
+            ++generation;
             if (input) { input.removeAllListeners('message'); try { input.closePort(); } catch (_) {} }
             input=null; identity=null;
         }
@@ -19,31 +21,30 @@ module.exports = function(RED) {
         }
         function scan() {
             if (closed) return;
-            let probe;
             try {
-                probe=new midi.input();
+                if (!probe) probe=new midi.input();
                 const names=Array.from({length:probe.getPortCount()},(_,i)=>probe.getPortName(i));
                 // Include every input; duplicate names retain their endpoint identity.
                 ports=names.map((name,index)=>({name,index,key:names.filter(n=>stable(n)===stable(name)).length===1?stable(name):name}));
                 const port=ports.find(p=>p.key===selected);
                 if (input && (!port || port.name!==identity)) { revoke(); stop(); }
                 if (!input && port) {
-                    const next=new midi.input();
+                    const next=receiver || (receiver=new midi.input());
+                    const openedGeneration=generation;
                     try {
                         next.ignoreTypes(false,false,false);
-                        next.on('message',(_,raw)=>{ if (input===next) node.send([{payload:raw.slice(1),midi:{raw:raw.slice()}},null]); });
+                        next.on('message',(_,raw)=>{ if (!closed && input===next && generation===openedGeneration) node.send([{payload:raw.slice(1),midi:{raw:raw.slice()}},null]); });
                         next.openPort(port.index); input=next; identity=port.name;
                         flow.set('wsMidiSource','oxygen'); flow.set('wsMidiRun',null);
                         flow.set('oxygenPending',{}); flow.set('wsHeartbeats',true);
                         node.send([null,{topic:'disarm'}]);
-                    } catch(e) { next.closePort(); throw e; }
+                    } catch(e) { stop(); next.removeAllListeners('message'); next.closePort(); throw e; }
                 }
                 flow.set('midiDevices',ports.map(p=>({title:p.name,value:p.key})));
                 flow.set('midiSelected',selected);
                 flow.set('oxygenReady',!!input); flow.set('oxygenNeedsRestart',false);
                 node.status({fill:input?'green':'yellow',shape:'dot',text:input?identity:'Select a MIDI input'});
             } catch(e) { if(input) {revoke();stop();} flow.set('oxygenReady',false); node.status({fill:'red',shape:'ring',text:e.message}); }
-            finally { if(probe) try {probe.closePort();} catch (_) {} }
         }
         node.on('input',(msg,send,done)=>{
             if(msg.topic==='midi-select') {
@@ -56,7 +57,7 @@ module.exports = function(RED) {
             scan(); if(done)done();
         });
         const timer=setInterval(scan,250);
-        node.on('close',()=>{closed=true;clearInterval(timer);revoke();stop();});
+        node.on('close',()=>{closed=true;clearInterval(timer);revoke();stop();if(probe)try{probe.closePort();}catch(_){} });
         scan();
     });
 };
