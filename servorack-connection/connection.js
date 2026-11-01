@@ -16,19 +16,46 @@ module.exports = function(RED) {
         RED.nodes.createNode(this,config);
         const node=this, flow=node.context().flow;
         let active=null, retry=null, closed=false, target='', wanted=false, delay=500;
+        function rackSettings() { return flow.get('rackSettings','servorack') || {}; }
+        function selected(device) {
+            flow.set('selectedRack',device || null);
+            flow.set('dashboardUnknown',!!(rackSettings()[device] || {}).unconfirmed);
+        }
+        function identify(device) {
+            const identities=flow.get('rackIdentities','servorack') || {};
+            identities[target]=device;
+            flow.set('rackIdentities',identities,'servorack');
+            const legacy=flow.get('legacyRackSettings','servorack');
+            if (legacy && !legacy.claimed && legacy.address===target) {
+                const all=rackSettings();
+                if (!all[device]) all[device]={...JSON.parse(JSON.stringify({mappings:legacy.mappings,names:legacy.names})),unconfirmed:false};
+                flow.set('rackSettings',all,'servorack');
+                flow.set('legacyRackSettings',{...legacy,claimed:device},'servorack');
+            }
+            selected(device);
+        }
         function reset() {
             // Never carry movement or a learned sample across transport sessions.
             flow.set('wsClients',{});
             flow.set('wsMidiRun',null); flow.set('oxygenPending',{});
             flow.set('servoPositions',{}); flow.set('midiInFlight',{});
             flow.set('axisProfiles',{}); flow.set('axisArmPending',null);
-            flow.set('oxygenLearn',null);
+            flow.set('oxygenLearn',null); flow.set('oxygenLearnRack',null);
+            flow.set('midiControlActivity',{}); flow.set('midiCcValues',{}); flow.set('lastOxygenCc',null);
             if (flow.get('dashboardPending')) {
-                flow.set('dashboardPending',null); flow.set('dashboardUnknown',true);
+                const pending=flow.get('dashboardPending'), device=pending.device || flow.get('selectedRack');
+                if (device) {
+                    const all=rackSettings();
+                    all[device]={mappings:{},names:{},...all[device],unconfirmed:true};
+                    flow.set('rackSettings',all,'servorack');
+                }
+                flow.set('dashboardPending',null);
+                flow.set('dashboardUnknown',!!(rackSettings()[flow.get('selectedRack')] || {}).unconfirmed);
             }
         }
         function status(state,detail='') {
-            const value={address:target,state,wanted,device:active && active.device || '',detail};
+            const value={address:target,state,wanted,device:active && active.device || '',
+                route:active && active.route || null,session:active && active.token || null,detail};
             flow.set('rackConnection',value);
             node.status({fill:state==='connected'?'green':state==='disconnected'?'grey':'yellow',
                 shape:'dot',text:state+(detail?': '+detail:'')});
@@ -54,7 +81,9 @@ module.exports = function(RED) {
         }
         function connect() {
             if (closed || !wanted) return;
-            reset(); status('connecting');
+            reset();
+            selected((flow.get('rackIdentities','servorack') || {})[target]);
+            status('connecting');
             let socket;
             try { socket=new WebSocket(target,{handshakeTimeout:2000,maxPayload:512,perMessageDeflate:false}); }
             catch(e) {
@@ -87,6 +116,7 @@ module.exports = function(RED) {
                     // Replace the route as well as the token to reject queued messages.
                     reset(); connection.route={type:'servorack',id:randomUUID()};
                     connection.token=p.session; connection.device=p.device;
+                    identify(p.device);
                     connection.lastState=Date.now();
                     status('handshake');
                 } else {
@@ -162,6 +192,15 @@ module.exports = function(RED) {
         if (saved) {
             try { target=address(saved); } catch(e) { node.warn(e.message); }
         }
+        // Preserve old single-rack settings once, tied to the previously saved
+        // address. A different rack/address must not inherit them on first use.
+        if (!flow.get('legacyRackSettings','servorack')) {
+            const mappings=flow.get('oxygenMappings','servorack'), names=flow.get('servoNames','servorack');
+            if (target && (mappings || names)) flow.set('legacyRackSettings',{
+                address:target,...JSON.parse(JSON.stringify({mappings:mappings || {},names:names || {}})),claimed:null,
+            },'servorack');
+        }
+        selected((flow.get('rackIdentities','servorack') || {})[target]);
         wanted=!!target && flow.get('rackAutoConnect','servorack')!==false;
         if (wanted) {
             flow.set('rackAddress',target,'servorack');

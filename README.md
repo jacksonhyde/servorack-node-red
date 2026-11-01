@@ -77,3 +77,16 @@ learning and profile reads; an interrupted profile save requires verification
 before arming. Heartbeats continue through the worksheet every 100 ms, and the
 ESP retains its independent 500 ms watchdog. Busy racks return HTTP 503 and
 are retried with backoff. Existing mappings and servo names remain in place.
+
+Rack settings are keyed by the identity reported in the WebSocket hello rather
+than by IP. Each rack has its own MIDI assignments and servo names, retained
+when its address changes. This version selects one connected rack at a time.
+Switching clears queued work and requires fresh explicit arming.
+
+The first upgrade snapshots the previous single-rack mappings/names and binds
+them only to the first identity at the previously saved rack address. Existing
+keys remain as backups; subsequent saves and learning use `rackSettings` in the
+named `servorack` context store. Other rack identities start with empty mappings.
+Interrupted profile saves block only their owning rack until its profile is
+read, and that block survives a backend restart. ESP32 calibration stays on the
+individual rack and is never copied on connection.
