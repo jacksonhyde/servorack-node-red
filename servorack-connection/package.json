@@ -1,0 +1,7 @@
+{
+  "name": "node-red-contrib-servorack-connection",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {"ws": "7.5.13"},
+  "node-red": {"nodes": {"servorack-connection": "connection.js"}}
+}

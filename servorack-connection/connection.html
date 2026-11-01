@@ -1,0 +1,23 @@
+<script type="text/javascript">
+RED.nodes.registerType('servorack connection', {
+    category:'network', color:'#b7ddd5',
+    defaults:{name:{value:''},address:{value:''}},
+    inputs:1, outputs:2, icon:'bridge.svg',
+    label:function(){return this.name || 'Rack connection';},
+    outputLabels:['rack messages','connection status']
+});
+</script>
+<script type="text/html" data-template-name="servorack connection">
+    <div class="form-row"><label for="node-input-name">Name</label><input id="node-input-name" type="text"></div>
+    <div class="form-row"><label for="node-input-address">Rack address</label><input id="node-input-address" type="text" placeholder="192.168.1.100"></div>
+</script>
+<script type="text/html" data-help-name="servorack connection">
+    <p>Connects to the rack's WebSocket server on port 80 at /servorack/control.
+    The address seeds the first connection; the latest runtime selection is saved
+    in the servorack context store. Reconnection never arms or replays commands.</p>
+    <p>Send topic <code>rack-connect</code> with the address in payload to connect
+    or change racks, or topic <code>rack-disconnect</code> to disconnect.
+    Ordinary messages require the exact incoming <code>_session</code> route and
+    current protocol session token. Route output 1 to the existing handshake
+    function and all protocol replies and heartbeat messages back to this node.</p>
+</script>

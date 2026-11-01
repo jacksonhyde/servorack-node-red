@@ -54,3 +54,24 @@ Profile calibration and angle limits are stored separately on the ESP32. Saving
 requires DISARMED state and a matching profile revision; it never moves a servo.
 USB reconnection requires restarting Node-RED to reopen the MIDI input, but the
 learned mappings survive. Select the source and explicitly Arm after recovery.
+
+## Rack WebSocket connection
+
+The `servorack-connection` custom node connects from this backend to
+`ws://<rack-ip>/servorack/control`; the rack IP is displayed on its LCD.
+Rebuild the image, then import the firmware repository's updated
+`examples/node-red/websocket-control.json`. Set the initial IP address in its
+**Rack connection** node and deploy. Deploy this worksheet before flashing the
+ESP-hosted WebSocket server firmware; it replaces the old incoming endpoint.
+
+The latest runtime address is saved in the existing named `servorack` context
+store. Send topic `rack-connect` with an address string to select/reconnect,
+or topic `rack-disconnect` to stop and remember that preference. A connected
+selection reconnects automatically after a backend restart; browser closure
+has no effect. Dashboard address controls are the following migration step.
+
+Reconnects never arm or replay commands. Disconnects clear pending MIDI,
+learning and profile reads; an interrupted profile save requires verification
+before arming. Heartbeats continue through the worksheet every 100 ms, and the
+ESP retains its independent 500 ms watchdog. Busy racks return HTTP 503 and
+are retried with backoff. Existing mappings and servo names remain in place.
