@@ -5,12 +5,21 @@ module.exports = function(RED) {
         RED.nodes.createNode(this, config);
         const node=this, flow=node.context().flow;
         // closePort() leaves the native ALSA client allocated; reuse both handles.
-        let input=null, receiver=null, probe=null, generation=0, identity=null, ports=[], closed=false;
+        let input=null, receiver=null, probe=null, generation=0, identity=null, ports=[], closed=false, receiverClosing=false;
         const stable = name => name.replace(/ \d+:\d+$/, '');
         let selected=flow.get('midiDevice','servorack') || '';
         function stop() {
             ++generation;
-            if (input) { input.removeAllListeners('message'); try { input.closePort(); } catch (_) {} }
+            if (input) {
+                input.removeAllListeners('message');
+                // node-midi uses uv_close(), which completes in libuv's close phase.
+                // Reinitialising its embedded handle before then aborts the process.
+                receiverClosing=true;
+                try { input.closePort(); } catch (_) {}
+                // Two check phases guarantee an intervening close phase, including
+                // when stop() itself was called from a timer or an I/O callback.
+                setImmediate(()=>setImmediate(()=>{receiverClosing=false;if(!closed)scan();}));
+            }
             input=null; identity=null;
         }
         function revoke() {
@@ -28,17 +37,18 @@ module.exports = function(RED) {
                 ports=names.map((name,index)=>({name,index,key:names.filter(n=>stable(n)===stable(name)).length===1?stable(name):name}));
                 const port=ports.find(p=>p.key===selected);
                 if (input && (!port || port.name!==identity)) { revoke(); stop(); }
-                if (!input && port) {
+                if (!input && port && !receiverClosing) {
                     const next=receiver || (receiver=new midi.input());
                     const openedGeneration=generation;
                     try {
                         next.ignoreTypes(false,false,false);
                         next.on('message',(_,raw)=>{ if (!closed && input===next && generation===openedGeneration) node.send([{payload:raw.slice(1),midi:{raw:raw.slice()}},null]); });
-                        next.openPort(port.index); input=next; identity=port.name;
+                        input=next;
+                        next.openPort(port.index); identity=port.name;
                         flow.set('wsMidiSource','oxygen'); flow.set('wsMidiRun',null);
                         flow.set('oxygenPending',{}); flow.set('wsHeartbeats',true);
                         node.send([null,{topic:'disarm'}]);
-                    } catch(e) { stop(); next.removeAllListeners('message'); next.closePort(); throw e; }
+                    } catch(e) { stop(); throw e; }
                 }
                 flow.set('midiDevices',ports.map(p=>({title:p.name,value:p.key})));
                 flow.set('midiSelected',selected);
