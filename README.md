@@ -1,68 +1,85 @@
-# ServoRack Node-RED, MIDI and MQTT
+# ServoRack Node-RED server
 
-Start the broker alongside the existing Node-RED instance:
+## Fresh installation
+
+From this repository, run:
+
+```sh
+docker compose up -d --build
+```
+
+Open the servo dashboard at **http://localhost:1880/dashboard/servos**.
+From another computer, replace `localhost` with this server's LAN IP address.
+The Node-RED flow editor is at http://localhost:1880.
+
+The image includes `flows.json`, containing the dashboard, MIDI routing,
+WebSocket connection manager and test controls. On first startup it copies this
+flow into the persistent `/data` volume and configures the named `servorack`
+context store. No firmware repository or manual flow import is required.
+Enter the rack IP under **Rack address**, connect, select a MIDI device and
+explicitly arm the desired servos. No rack address, learned mappings or
+credentials are included in the initial flow.
+
+## USB MIDI on Linux
+
+To expose hardware and virtual MIDI inputs through ALSA, run instead:
+
+```sh
+docker compose -f docker-compose.yaml -f docker-compose.midi.yaml up -d --build
+```
+
+This requires `/dev/snd/seq` on the host. If needed, set `MIDI_AUDIO_GID` to
+its group ID (`stat -c %g /dev/snd/seq`) in a local `.env` file.
+The default Compose configuration can open the dashboard without MIDI hardware;
+native USB MIDI access on macOS/Windows needs a separate host MIDI bridge.
+
+The custom image includes node-red-contrib-midi 1.1.2, FlowFuse Dashboard 1.34.1,
+and the ServoRack MIDI and connection nodes. MIDI device discovery and switching
+are handled by the backend; closing the browser does not stop heartbeats.
+
+## Persistence and updates
+
+Flows, device selections and mappings live in the `node-red-data` volume.
+Rebuilding the image or recreating the container preserves them. Do not use
+`docker compose down -v` unless you intend to delete those settings.
+Calibration and travel limits are stored separately on each ESP32.
+
+Startup **never overwrites an existing flow file**, even an empty one. On an
+existing installation without the dashboard, import this repository's
+`flows.json` using the editor's **Import** menu and deploy. Import only once;
+existing installations with the ServoRack worksheet should update its existing
+nodes rather than create duplicate control flows.
+
+The tracked `flows.json` is the distributable default. To save future worksheet
+changes, export the complete ServoRack worksheet including its dashboard
+configuration nodes, remove machine-specific addresses, and update this file.
+Do not commit `flows_cred.json`, `/data`, local context or credentials.
+
+Run bootstrap regression tests with `node --test tests/bootstrap.test.cjs`.
+
+## Optional MQTT availability
+
+Mosquitto runs alongside Node-RED. Within Compose its address is
+`mqtt://mosquitto:1883`. Anonymous MQTT is intended for trusted LAN testing.
+By default its published port binds to loopback. To let an ESP32 reach it, set
+`MQTT_BIND_ADDRESS` to this computer's LAN IP in `.env` and recreate Mosquitto:
 
 ```sh
 docker compose up -d mosquitto
-docker compose logs -f mosquitto
 ```
 
-Node-RED remains at http://192.168.88.100:1880.
-Configure its MQTT connection with server `mosquitto`, port `1883`, without
-credentials. Subscribe an **mqtt in** node to `servorack/+/availability` at
-QoS 1 and wire it to a **debug** node.
-
-Configure the ESP32 broker URI as `mqtt://192.168.88.100:1883` through
-`idf.py menuconfig` > ServoRack MQTT, then rebuild and flash.
-
-Watch availability from the broker container:
-
-```sh
-docker compose exec mosquitto mosquitto_sub -t 'servorack/+/availability' -q 1 -v
-```
-
-Expect retained `online` after connection and `offline` after the broker detects
-power/cable loss. Reconnect to verify recovery. A new subscriber should receive
-the latest retained value immediately.
-
-Anonymous plain MQTT is enabled for LAN testing. The published port binds only
-to 192.168.88.100; reserve this address in DHCP. Retained state is persisted in
-the mosquitto-data volume. Existing Node-RED flows and data are preserved.
-
-
-## USB MIDI and servo dashboard
-
-The custom Dockerfile adds node-red-contrib-midi 1.1.2 and FlowFuse Dashboard
-1.34.1 to the pinned Node-RED base. Compose exposes only the ALSA sequencer and
-adds the host audio group (MIDI_AUDIO_GID, default 29). Node-RED stays non-root.
-
-Rebuild and start with:
-
-    docker compose up -d --build node-red
-
-The dashboard is at http://192.168.88.100:1880/dashboard/servos. Import the
-companion firmware repository's examples/node-red/websocket-control.json to
-install the MIDI routing and dashboard worksheet on a fresh instance.
-
-The worksheet uses the named servorack context store for learned mappings and
-servo names. Append persistent-context.js to /data/settings.js, preserving the
-existing settings, then restart Node-RED before deploying that worksheet.
-This setup has already been applied to the current persistent data volume.
-The existing channel 9 / CC22 assignment was migrated before restart.
-
-Profile calibration and angle limits are stored separately on the ESP32. Saving
-requires DISARMED state and a matching profile revision; it never moves a servo.
-USB reconnection requires restarting Node-RED to reopen the MIDI input, but the
-learned mappings survive. Select the source and explicitly Arm after recovery.
+Configure the ESP32's optional MQTT broker URI to that LAN IP. MQTT reports
+availability; servo control uses WebSockets. Broker data is persisted separately
+in `mosquitto-data`.
 
 ## Rack WebSocket connection
 
 The `servorack-connection` custom node connects from this backend to
 `ws://<rack-ip>/servorack/control`; the rack IP is displayed on its LCD.
-Rebuild the image, then import the firmware repository's updated
-`examples/node-red/websocket-control.json` and deploy. Open the MIDI Mapping
-dashboard, enter the IP in **Rack address**, and click **Connect**. Deploy this worksheet before flashing the
-ESP-hosted WebSocket server firmware; it replaces the old incoming endpoint.
+New installations include the worksheet automatically; existing installations can
+import this repository's `flows.json`. Open the MIDI Mapping
+dashboard, enter the IP in **Rack address**, and click **Connect**. The rack
+must run the ESP-hosted WebSocket server firmware.
 
 The latest runtime address is saved in the existing named `servorack` context
 store. Send topic `rack-connect` with an address string to select/reconnect,

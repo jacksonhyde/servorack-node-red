@@ -9,10 +9,6 @@ services:
   node-red:
     build: .
     image: servorack-node-red-midi:local
-    devices:
-      - /dev/snd/seq:/dev/snd/seq
-    group_add:
-      - "${MIDI_AUDIO_GID:-29}" # Host audio group; ALSA sequencer access
     environment:
       - TZ=Europe/Amsterdam
     ports:
@@ -26,7 +22,7 @@ services:
     image: eclipse-mosquitto:2
     restart: unless-stopped
     ports:
-      - "192.168.88.100:1883:1883"
+      - "${MQTT_BIND_ADDRESS:-127.0.0.1}:1883:1883"
     networks:
       - node-red-net
     volumes:

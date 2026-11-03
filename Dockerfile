@@ -7,4 +7,8 @@ RUN apk add --no-cache alsa-lib alsa-utils \
     && apk del .midi-build
 COPY servorack-midi /usr/src/node-red/node_modules/node-red-contrib-servorack-midi
 COPY servorack-connection /usr/src/node-red/node_modules/node-red-contrib-servorack-connection
+COPY flows.json persistent-context.js bootstrap.cjs start.sh /opt/servorack/
+# Remove the base image's example worksheet, not any mounted user data.
+RUN rm -f /data/flows.json && chmod +x /opt/servorack/start.sh
 USER node-red
+ENTRYPOINT ["/opt/servorack/start.sh"]

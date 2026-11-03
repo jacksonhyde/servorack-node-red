@@ -1,0 +1,1275 @@
+[
+  {
+    "id": "sr-ws-tab",
+    "type": "tab",
+    "label": "ServoRack WebSocket control",
+    "disabled": false,
+    "info": "WebSocket session/watchdog and MIDI CC tests. Manual Arm required. Run sends alternate reduced-travel poses every two seconds. The servo controls travel speed; this is not a slow continuous path test."
+  },
+  {
+    "id": "sr-ws-note",
+    "type": "comment",
+    "z": "sr-ws-tab",
+    "name": "Arm manually. Run alternates Low / High poses every 2 s; Pause disarms.",
+    "x": 430,
+    "y": 40
+  },
+  {
+    "id": "sr-ws-receive",
+    "type": "function",
+    "z": "sr-ws-tab",
+    "name": "Handshake / device state",
+    "x": 390,
+    "y": 120,
+    "func": "let p;\ntry { p = JSON.parse(Buffer.isBuffer(msg.payload) ? msg.payload.toString() : msg.payload); } catch (_) { return null; }\nif (!p || p.v !== 1 || !msg._session || !/^[0-9a-f]{32}$/.test(p.session || '')) return null;\nconst transport=flow.get('rackConnection');\nif (!transport || !transport.route || msg._session.id!==transport.route.id ||\n    p.session!==transport.session || (p.type==='hello' && p.device!==transport.device)) return null;\nconst clients = flow.get('wsClients') || {};\nconst key = msg._session.id;\nif (p.type === 'hello' && /^servorack-[0-9a-f]{12}$/.test(p.device || '')) {\n    for (const k of Object.keys(clients)) if (clients[k].device === p.device) delete clients[k];\n    flow.set('wsMidiRun', null); flow.set('oxygenPending',{}); flow.set('servoPositions',{}); flow.set('midiInFlight',{});\n    clients[key] = {device:p.device, session:p.session, route:msg._session, seq:0, id:0, seen:Date.now(), live:false, state:'DISARMED', profiles:p.profiles||0, axisArm:p.axis_arm||0, armedMask:0};\n    flow.set('wsClients', clients);\n    return [{_session:msg._session, payload:JSON.stringify({v:1,type:'hello',session:p.session})}, {payload:{device:p.device,event:'new session; explicit Arm required'}}];\n}\nconst c = clients[key];\nif (!c || c.session !== p.session) return null;\nif (p.type === 'profile') return [null,null,{topic:'profile-event',device:c.device,payload:p}];\nif (p.type !== 'state' && p.type !== 'ack') return null;\nc.seen = Date.now();\nif (p.type === 'state') {\n    c.live = p.live === true; c.state = p.state; c.armedMask=Number.isInteger(p.armed_mask)?p.armed_mask:0; c.travel=Array.isArray(p.travel) && p.travel.length===16 && p.travel.every(t=>Array.isArray(t) && (t.length===3 || (t.length===4 && (t[3]===0 || t[3]===1))) && t.every(Number.isInteger) && t[0]>0 && t[0]<=360 && t[1]>=0 && t[1]<t[2] && t[2]<=t[0])?p.travel:null; c.rotations=Array.isArray(p.rotations) && p.rotations.length===16?p.rotations:null;\n    if (!c.live || c.state !== 'ARMED') { flow.set('wsMidiRun', null); flow.set('oxygenPending',{}); flow.set('servoPositions',{}); flow.set('midiInFlight',{}); }\n}\nflow.set('wsClients', clients);\nnode.status({fill:c.live?'green':'yellow',shape:'dot',text:c.device+' '+c.state});\nif (p.type === 'ack' && p.command === 'midi') {\n    const inFlight=flow.get('midiInFlight') || {}, command=inFlight[c.device+':'+c.session+':'+p.id];\n    delete inFlight[c.device+':'+c.session+':'+p.id]; flow.set('midiInFlight',inFlight);\n    if(p.accepted && c.live && c.state==='ARMED' && command && command.device===c.device && command.session===c.session && Date.now()-command.at<1000) {\n        const positions=flow.get('servoPositions') || {};\n        const previous=positions[command.axis];\n        if(!previous || previous.session!==c.session || previous.id<p.id) positions[command.axis]={...command,id:p.id};\n        flow.set('servoPositions',positions);\n    }\n    return null;\n}\nreturn [null, {payload:{device:c.device,...p}}, p.command==='profile_set'?{topic:'profile-event',device:c.device,payload:p}:null];\n",
+    "outputs": 3,
+    "noerr": 0,
+    "initialize": "flow.set('wsClients', {}); flow.set('wsHeartbeats', true); flow.set('wsMidiRun', null); flow.set('wsMidiSource','synthetic'); flow.set('oxygenPending',{}); flow.set('oxygenReady',false); flow.set('oxygenNeedsRestart',false); flow.set('oxygenLearn',null); flow.set('axisProfiles',{}); flow.set('dashboardPending',null); flow.set('dashboardUnknown',false);",
+    "finalize": "",
+    "libs": [],
+    "wires": [
+      [
+        "sr-rack-connection"
+      ],
+      [
+        "sr-ws-debug"
+      ],
+      [
+        "sr-dashboard-controller"
+      ]
+    ]
+  },
+  {
+    "id": "sr-ws-debug",
+    "type": "debug",
+    "z": "sr-ws-tab",
+    "name": "Control acknowledgements / state",
+    "x": 760,
+    "y": 180,
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": false,
+    "complete": "payload",
+    "targetType": "msg",
+    "wires": []
+  },
+  {
+    "id": "sr-ws-tick",
+    "type": "inject",
+    "z": "sr-ws-tab",
+    "name": "Heartbeat every 100 ms",
+    "x": 170,
+    "y": 240,
+    "props": [
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "0.1",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "tick",
+    "wires": [
+      [
+        "sr-ws-heartbeat"
+      ]
+    ]
+  },
+  {
+    "id": "sr-ws-heartbeat",
+    "type": "function",
+    "z": "sr-ws-tab",
+    "name": "Session heartbeats",
+    "x": 440,
+    "y": 240,
+    "func": "if (flow.get('wsHeartbeats') === false) return null;\nconst clients = flow.get('wsClients') || {};\nconst outgoing = [];\nfor (const [key,c] of Object.entries(clients)) {\n    if (c.device!==flow.get('selectedRack')) continue;\n    if (Date.now()-c.seen > 3000 || c.seq >= 0xffffffff) { delete clients[key]; continue; }\n    outgoing.push({_session:c.route,payload:JSON.stringify({v:1,type:'heartbeat',session:c.session,seq:++c.seq})});\n}\nflow.set('wsClients', clients);\nreturn [outgoing];\n",
+    "outputs": 1,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "wires": [
+      [
+        "sr-rack-connection"
+      ]
+    ]
+  },
+  {
+    "id": "sr-ws-arm",
+    "type": "inject",
+    "z": "sr-ws-tab",
+    "name": "Arm (no movement)",
+    "x": 150,
+    "y": 340,
+    "props": [
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "arm",
+    "wires": [
+      [
+        "sr-ws-command"
+      ]
+    ]
+  },
+  {
+    "id": "sr-ws-disarm",
+    "type": "inject",
+    "z": "sr-ws-tab",
+    "name": "Disarm all axes",
+    "x": 150,
+    "y": 400,
+    "props": [
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "disarm",
+    "wires": [
+      [
+        "sr-ws-command"
+      ]
+    ]
+  },
+  {
+    "id": "sr-ws-command",
+    "type": "function",
+    "z": "sr-ws-tab",
+    "name": "Manual Arm / Disarm",
+    "x": 440,
+    "y": 360,
+    "func": "if (msg.topic==='arm' && (flow.get('dashboardPending') || (flow.get('rackSettings','servorack') || {})[flow.get('selectedRack')]?.unconfirmed)) { node.warn('Resolve the configuration save before arming'); return null; }\nif (msg.topic === 'disarm') { flow.set('wsMidiRun', null); flow.set('oxygenPending',{}); }\nif (msg.topic === 'arm' && (flow.get('wsMidiSource') === 'monitor' || (flow.get('wsMidiSource') === 'oxygen' && (!flow.get('oxygenReady') || flow.get('oxygenNeedsRestart'))))) { node.warn('Selected MIDI source is not ready'); return null; }\nconst device = flow.get('selectedRack');\nif (msg.topic !== 'arm' && msg.topic !== 'disarm') return null;\nconst clients = flow.get('wsClients') || {};\nconst c = Object.values(clients).find(c => c.device === device && Date.now()-c.seen < 1000);\nif ((msg.device && msg.device!==device) || (msg.session && (!c || msg.session!==c.session))) return null;\nif (!c || c.id >= 0xffffffff || (msg.topic === 'arm' && (!c.live || c.state !== 'DISARMED'))) {\n    node.warn('No fresh, ready device session for '+msg.topic); return null;\n}\nconst payload = JSON.stringify({v:1,type:msg.topic,session:c.session,id:++c.id});\nflow.set('wsClients', clients);\nreturn {_session:c.route,payload};\n",
+    "outputs": 1,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "wires": [
+      [
+        "sr-rack-connection"
+      ]
+    ]
+  },
+  {
+    "id": "sr-ws-pause",
+    "type": "inject",
+    "z": "sr-ws-tab",
+    "name": "Pause heartbeats (test loss)",
+    "x": 190,
+    "y": 480,
+    "props": [
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "pause",
+    "wires": [
+      [
+        "sr-ws-toggle"
+      ]
+    ]
+  },
+  {
+    "id": "sr-ws-resume",
+    "type": "inject",
+    "z": "sr-ws-tab",
+    "name": "Resume heartbeats",
+    "x": 170,
+    "y": 540,
+    "props": [
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "resume",
+    "wires": [
+      [
+        "sr-ws-toggle"
+      ]
+    ]
+  },
+  {
+    "id": "sr-ws-toggle",
+    "type": "function",
+    "z": "sr-ws-tab",
+    "name": "Heartbeat test switch",
+    "x": 470,
+    "y": 500,
+    "func": "if (msg.topic !== 'resume') { flow.set('wsMidiRun', null); flow.set('oxygenPending',{}); }\nflow.set('wsHeartbeats', msg.topic === 'resume');\nnode.status({fill:msg.topic === 'resume'?'green':'red',shape:'dot',text:msg.topic});\nreturn null;",
+    "outputs": 1,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "wires": [
+      []
+    ]
+  },
+  {
+    "id": "sr-midi-note",
+    "type": "comment",
+    "z": "sr-ws-tab",
+    "name": "Synthetic MIDI channel 1 \u00b7 CC16\u201319 \u00b7 values 0=min, 64=centre, 127=max",
+    "x": 450,
+    "y": 620
+  },
+  {
+    "id": "sr-midi-a0-low",
+    "type": "inject",
+    "z": "sr-ws-tab",
+    "name": "Axis 0 low (32)",
+    "x": 160,
+    "y": 680,
+    "props": [
+      {
+        "p": "payload"
+      },
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "midi",
+    "payload": "[176, 16, 32]",
+    "payloadType": "json",
+    "wires": [
+      [
+        "sr-ws-midi-send"
+      ]
+    ]
+  },
+  {
+    "id": "sr-midi-a0-centre",
+    "type": "inject",
+    "z": "sr-ws-tab",
+    "name": "Axis 0 centre (64)",
+    "x": 380,
+    "y": 680,
+    "props": [
+      {
+        "p": "payload"
+      },
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "midi",
+    "payload": "[176, 16, 64]",
+    "payloadType": "json",
+    "wires": [
+      [
+        "sr-ws-midi-send"
+      ]
+    ]
+  },
+  {
+    "id": "sr-midi-a0-high",
+    "type": "inject",
+    "z": "sr-ws-tab",
+    "name": "Axis 0 high (96)",
+    "x": 600,
+    "y": 680,
+    "props": [
+      {
+        "p": "payload"
+      },
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "midi",
+    "payload": "[176, 16, 96]",
+    "payloadType": "json",
+    "wires": [
+      [
+        "sr-ws-midi-send"
+      ]
+    ]
+  },
+  {
+    "id": "sr-midi-a1-low",
+    "type": "inject",
+    "z": "sr-ws-tab",
+    "name": "Axis 1 low (32)",
+    "x": 160,
+    "y": 740,
+    "props": [
+      {
+        "p": "payload"
+      },
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "midi",
+    "payload": "[176, 17, 32]",
+    "payloadType": "json",
+    "wires": [
+      [
+        "sr-ws-midi-send"
+      ]
+    ]
+  },
+  {
+    "id": "sr-midi-a1-centre",
+    "type": "inject",
+    "z": "sr-ws-tab",
+    "name": "Axis 1 centre (64)",
+    "x": 380,
+    "y": 740,
+    "props": [
+      {
+        "p": "payload"
+      },
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "midi",
+    "payload": "[176, 17, 64]",
+    "payloadType": "json",
+    "wires": [
+      [
+        "sr-ws-midi-send"
+      ]
+    ]
+  },
+  {
+    "id": "sr-midi-a1-high",
+    "type": "inject",
+    "z": "sr-ws-tab",
+    "name": "Axis 1 high (96)",
+    "x": 600,
+    "y": 740,
+    "props": [
+      {
+        "p": "payload"
+      },
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "midi",
+    "payload": "[176, 17, 96]",
+    "payloadType": "json",
+    "wires": [
+      [
+        "sr-ws-midi-send"
+      ]
+    ]
+  },
+  {
+    "id": "sr-midi-a2-low",
+    "type": "inject",
+    "z": "sr-ws-tab",
+    "name": "Axis 2 low (32)",
+    "x": 160,
+    "y": 800,
+    "props": [
+      {
+        "p": "payload"
+      },
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "midi",
+    "payload": "[176, 18, 32]",
+    "payloadType": "json",
+    "wires": [
+      [
+        "sr-ws-midi-send"
+      ]
+    ]
+  },
+  {
+    "id": "sr-midi-a2-centre",
+    "type": "inject",
+    "z": "sr-ws-tab",
+    "name": "Axis 2 centre (64)",
+    "x": 380,
+    "y": 800,
+    "props": [
+      {
+        "p": "payload"
+      },
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "midi",
+    "payload": "[176, 18, 64]",
+    "payloadType": "json",
+    "wires": [
+      [
+        "sr-ws-midi-send"
+      ]
+    ]
+  },
+  {
+    "id": "sr-midi-a2-high",
+    "type": "inject",
+    "z": "sr-ws-tab",
+    "name": "Axis 2 high (96)",
+    "x": 600,
+    "y": 800,
+    "props": [
+      {
+        "p": "payload"
+      },
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "midi",
+    "payload": "[176, 18, 96]",
+    "payloadType": "json",
+    "wires": [
+      [
+        "sr-ws-midi-send"
+      ]
+    ]
+  },
+  {
+    "id": "sr-midi-a3-low",
+    "type": "inject",
+    "z": "sr-ws-tab",
+    "name": "Axis 3 low (32)",
+    "x": 160,
+    "y": 860,
+    "props": [
+      {
+        "p": "payload"
+      },
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "midi",
+    "payload": "[176, 19, 32]",
+    "payloadType": "json",
+    "wires": [
+      [
+        "sr-ws-midi-send"
+      ]
+    ]
+  },
+  {
+    "id": "sr-midi-a3-centre",
+    "type": "inject",
+    "z": "sr-ws-tab",
+    "name": "Axis 3 centre (64)",
+    "x": 380,
+    "y": 860,
+    "props": [
+      {
+        "p": "payload"
+      },
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "midi",
+    "payload": "[176, 19, 64]",
+    "payloadType": "json",
+    "wires": [
+      [
+        "sr-ws-midi-send"
+      ]
+    ]
+  },
+  {
+    "id": "sr-midi-a3-high",
+    "type": "inject",
+    "z": "sr-ws-tab",
+    "name": "Axis 3 high (96)",
+    "x": 600,
+    "y": 860,
+    "props": [
+      {
+        "p": "payload"
+      },
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "midi",
+    "payload": "[176, 19, 96]",
+    "payloadType": "json",
+    "wires": [
+      [
+        "sr-ws-midi-send"
+      ]
+    ]
+  },
+  {
+    "id": "sr-ws-midi-send",
+    "type": "function",
+    "z": "sr-ws-tab",
+    "name": "MIDI \u2192 current armed session",
+    "x": 960,
+    "y": 760,
+    "func": "const selected = flow.get('wsMidiSource') || 'synthetic';\nif ((msg.source || 'synthetic') !== selected) return null;\nconst device = flow.get('selectedRack');\nconst bytes = msg.payload;\nif (!Array.isArray(bytes) || bytes.length !== 3 || !bytes.every(Number.isInteger) ||\n    bytes[0] < 176 || bytes[0] > 191 || bytes[1] < 0 || bytes[1] > 119 || bytes[2] < 0 || bytes[2] > 127) return null;\nconst clients = flow.get('wsClients') || {};\nconst c = Object.values(clients).find(c => c.device === device && c.live && c.state === 'ARMED' && Date.now()-c.seen < 1000);\nif (!c || (msg.device && msg.device!==device) || (msg.session && msg.session !== c.session) || c.id >= 0xffffffff) {\n    flow.set('wsMidiRun', null); node.warn('MIDI requires a fresh, armed session'); return null;\n}\nconst payload = JSON.stringify({v:1,type:'midi',session:c.session,id:++c.id,bytes});\nconst inFlight=flow.get('midiInFlight') || {};\nif(bytes[0]===176 && bytes[1]>=16 && bytes[1]<=31) {\n    inFlight[device+':'+c.session+':'+c.id]={device,axis:bytes[1]-16,value:bytes[2],session:c.session,at:Date.now()};\n    for(const id of Object.keys(inFlight)) if(Date.now()-inFlight[id].at>1000) delete inFlight[id];\n    flow.set('midiInFlight',inFlight);\n}\nflow.set('wsClients', clients);\nreturn {_session:c.route,payload};\n",
+    "outputs": 1,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "wires": [
+      [
+        "sr-rack-connection"
+      ]
+    ]
+  },
+  {
+    "id": "sr-midi-run",
+    "type": "inject",
+    "z": "sr-ws-tab",
+    "name": "Run alternating MIDI poses (four axes)",
+    "x": 180,
+    "y": 980,
+    "props": [
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "run",
+    "payload": "",
+    "payloadType": "json",
+    "wires": [
+      [
+        "sr-ws-midi-run"
+      ]
+    ]
+  },
+  {
+    "id": "sr-midi-pause",
+    "type": "inject",
+    "z": "sr-ws-tab",
+    "name": "Pause loop + Disarm all",
+    "x": 180,
+    "y": 1040,
+    "props": [
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "pause",
+    "payload": "",
+    "payloadType": "json",
+    "wires": [
+      [
+        "sr-ws-midi-run"
+      ]
+    ]
+  },
+  {
+    "id": "sr-ws-midi-run",
+    "type": "function",
+    "z": "sr-ws-tab",
+    "name": "Start / stop synthetic source",
+    "x": 480,
+    "y": 1000,
+    "func": "if (msg.topic !== 'run') {\n    flow.set('wsMidiRun', null);\n    return {topic:'disarm'};\n}\nif (flow.get('wsMidiSource') !== 'synthetic') { node.warn('Select Synthetic before Run'); return null; }\nconst device = flow.get('selectedRack');\nconst c = Object.values(flow.get('wsClients') || {}).find(c => c.device === device && c.live && c.state === 'ARMED' && Date.now()-c.seen < 1000);\nif (!c) { node.warn('Arm before Run'); return null; }\n// Repeated Run does not restart an existing loop.\nif (!flow.get('wsMidiRun')) flow.set('wsMidiRun', {session:c.session,device,start:Date.now()});\nreturn null;\n",
+    "outputs": 1,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "wires": [
+      [
+        "sr-ws-command"
+      ]
+    ]
+  },
+  {
+    "id": "sr-midi-tick",
+    "type": "inject",
+    "z": "sr-ws-tab",
+    "name": "Pose source clock (20 Hz)",
+    "x": 170,
+    "y": 1120,
+    "props": [
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "0.05",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "tick",
+    "payload": "",
+    "payloadType": "json",
+    "wires": [
+      [
+        "sr-ws-midi-tick"
+      ]
+    ]
+  },
+  {
+    "id": "sr-ws-midi-tick",
+    "type": "function",
+    "z": "sr-ws-tab",
+    "name": "Alternate Low / High MIDI poses",
+    "x": 510,
+    "y": 1120,
+    "func": "if (flow.get('wsMidiSource') !== 'synthetic') return null;\nconst run = flow.get('wsMidiRun');\nif (!run) return null;\nif (run.device!==flow.get('selectedRack')) { flow.set('wsMidiRun',null); return null; }\nconst c = Object.values(flow.get('wsClients') || {}).find(c => c.device === run.device && c.session === run.session && c.live && c.state === 'ARMED' && Date.now()-c.seen < 1000);\nif (!c || flow.get('wsHeartbeats') === false) { flow.set('wsMidiRun', null); return null; }\n// Send only a changed pose. The servo supplies the motion between endpoints.\nconst pose = Math.floor((Date.now()-run.start)/2000) % 2;\nif (run.lastPose === pose) return null;\nrun.lastPose = pose;\nflow.set('wsMidiRun', run);\nconst value = pose === 0 ? 32 : 96;\nreturn [[0,1,2,3].map(axis => ({device:run.device,session:run.session,payload:[176,16+axis,value]}))];\n",
+    "outputs": 1,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "wires": [
+      [
+        "sr-ws-midi-send"
+      ]
+    ]
+  },
+  {
+    "id": "sr-oxygen-note",
+    "type": "comment",
+    "z": "sr-ws-tab",
+    "name": "USB Oxygen: Learn while disarmed \u2192 move one control \u2192 Use Oxygen live \u2192 Arm",
+    "x": 490,
+    "y": 1240
+  },
+  {
+    "id": "sr-oxygen-input",
+    "type": "servorack midi input",
+    "z": "sr-ws-tab",
+    "name": "All MIDI inputs (dashboard selection)",
+    "x": 180,
+    "y": 1320,
+    "midiport": "1",
+    "wires": [
+      [
+        "sr-oxygen-map"
+      ],
+      [
+        "sr-ws-command"
+      ]
+    ]
+  },
+  {
+    "id": "sr-oxygen-map",
+    "type": "function",
+    "z": "sr-ws-tab",
+    "name": "Capture / learn / map CC",
+    "x": 460,
+    "y": 1320,
+    "func": "const raw = msg.midi && msg.midi.raw;\n// Observe CC activity before learning and arm-state filtering.\nif (Array.isArray(raw) && raw.length===3 && raw.every(Number.isInteger) &&\n    raw[0]>=176 && raw[0]<=191 && raw[1]>=0 && raw[1]<=119 && raw[2]>=0 && raw[2]<=127) {\n    const activity=flow.get('midiControlActivity') || {};\n    const key=((raw[0]&15)+1)+':'+raw[1], previous=activity[key];\n    activity[key]={sequence:previous?previous.sequence+1:1,at:Date.now(),device:flow.get('midiSelected')};\n    flow.set('midiControlActivity',activity);\n}\nif (!Array.isArray(raw) || raw.length !== 3 || !raw.every(Number.isInteger) ||\n    raw[0]<176 || raw[0]>191 || raw[1]<0 || raw[1]>119 || raw[2]<0 || raw[2]>127) return null;\nconst channel = (raw[0]&15)+1, cc = raw[1], value = raw[2];\nconst device=flow.get('selectedRack');\nconst clients = Object.values(flow.get('wsClients') || {}).filter(c=>c.device===device);\nflow.set('lastOxygenCc',{channel,cc,value}); const ccValues=flow.get('midiCcValues') || {}; ccValues[channel+':'+cc]={value,device:flow.get('midiSelected')}; flow.set('midiCcValues',ccValues);\nconst learn = flow.get('oxygenLearn');\nconst settings=flow.get('rackSettings','servorack') || {};\nconst rack=settings[device] || {mappings:{},names:{},unconfirmed:false};\nconst mappings=rack.mappings || {};\nif (!device) return null;\nif (Number.isInteger(learn)) {\n    if (flow.get('oxygenLearnRack')!==device) return null;\n    if (clients.some(c=>c.state==='ARMED' || c.state==='DISARMING' || c.state==='CONFIGURING')) {\n        node.warn('Wait for DISARMED before learning'); return null;\n    }\n    for (const key of Object.keys(mappings)) if (mappings[key].axis === learn) delete mappings[key];\n    mappings[channel+':'+cc] = {axis:learn,min:0,max:127};\n    rack.mappings=mappings; settings[device]=rack; flow.set('rackSettings',settings,'servorack');\n    flow.set('oxygenLearn',null); flow.set('oxygenLearnRack',null);\n    // Learn completed: resume MIDI routing eligibility, never arm or replay this sample.\n    if (flow.get('oxygenReady') && !flow.get('oxygenNeedsRestart')) {\n        flow.set('wsMidiSource','oxygen'); flow.set('wsHeartbeats',true);\n        flow.set('oxygenPending',{});\n        flow.set('dashboardNotice','');\n    }\n    node.status({fill:'green',shape:'dot',text:'axis '+learn+' \u2190 ch '+channel+' CC'+cc});\n    return [{payload:{learnedAxis:learn,channel,cc,mappings}},{topic:'learned-event',device,payload:{axis:learn}}];\n}\nconst route = mappings[channel+':'+cc];\nif (route && flow.get('wsMidiSource') === 'oxygen' && flow.get('oxygenReady') && !flow.get('oxygenNeedsRestart')) {\n    const c = clients.find(c=>c.device===flow.get('selectedRack') && c.live && c.state==='ARMED' && Date.now()-c.seen<1000);\n    if (c) {\n        const pending = flow.get('oxygenPending') || {};\n        const mapped = value;\n        pending[route.axis] = {source:'oxygen',device,session:c.session,payload:[176,16+route.axis,mapped]};\n        flow.set('oxygenPending',pending);\n    }\n}\nreturn {payload:{channel,cc,value,axis:route?route.axis:null}};\n",
+    "outputs": 2,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "wires": [
+      [
+        "sr-oxygen-debug"
+      ],
+      [
+        "sr-dashboard-controller"
+      ]
+    ]
+  },
+  {
+    "id": "sr-oxygen-debug",
+    "type": "debug",
+    "z": "sr-ws-tab",
+    "name": "Oxygen CC / learned mappings",
+    "x": 780,
+    "y": 1320,
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": false,
+    "complete": "payload",
+    "targetType": "msg",
+    "wires": []
+  },
+  {
+    "id": "sr-oxygen-learn-0",
+    "type": "inject",
+    "z": "sr-ws-tab",
+    "name": "Learn axis 0",
+    "x": 150,
+    "y": 1400,
+    "props": [
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "learn:0",
+    "wires": [
+      [
+        "sr-oxygen-select"
+      ]
+    ]
+  },
+  {
+    "id": "sr-oxygen-learn-1",
+    "type": "inject",
+    "z": "sr-ws-tab",
+    "name": "Learn axis 1",
+    "x": 350,
+    "y": 1400,
+    "props": [
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "learn:1",
+    "wires": [
+      [
+        "sr-oxygen-select"
+      ]
+    ]
+  },
+  {
+    "id": "sr-oxygen-learn-2",
+    "type": "inject",
+    "z": "sr-ws-tab",
+    "name": "Learn axis 2",
+    "x": 550,
+    "y": 1400,
+    "props": [
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "learn:2",
+    "wires": [
+      [
+        "sr-oxygen-select"
+      ]
+    ]
+  },
+  {
+    "id": "sr-oxygen-learn-3",
+    "type": "inject",
+    "z": "sr-ws-tab",
+    "name": "Learn axis 3",
+    "x": 750,
+    "y": 1400,
+    "props": [
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "learn:3",
+    "wires": [
+      [
+        "sr-oxygen-select"
+      ]
+    ]
+  },
+  {
+    "id": "sr-source-oxygen",
+    "type": "inject",
+    "z": "sr-ws-tab",
+    "name": "Use Oxygen live",
+    "x": 150,
+    "y": 1480,
+    "props": [
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "oxygen",
+    "wires": [
+      [
+        "sr-oxygen-select"
+      ]
+    ]
+  },
+  {
+    "id": "sr-source-synthetic",
+    "type": "inject",
+    "z": "sr-ws-tab",
+    "name": "Use Synthetic",
+    "x": 350,
+    "y": 1480,
+    "props": [
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "synthetic",
+    "wires": [
+      [
+        "sr-oxygen-select"
+      ]
+    ]
+  },
+  {
+    "id": "sr-source-monitor",
+    "type": "inject",
+    "z": "sr-ws-tab",
+    "name": "Monitor only / Disarm",
+    "x": 580,
+    "y": 1480,
+    "props": [
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "monitor",
+    "wires": [
+      [
+        "sr-oxygen-select"
+      ]
+    ]
+  },
+  {
+    "id": "sr-oxygen-select",
+    "type": "function",
+    "z": "sr-ws-tab",
+    "name": "Source / learn (always disarms)",
+    "x": 950,
+    "y": 1440,
+    "func": "const device=flow.get('selectedRack');\nconst client=Object.values(flow.get('wsClients') || {}).find(c=>c.device===device);\nif ((msg.device && msg.device!==device) || (msg.session && (!client || msg.session!==client.session))) return null;\nconst previousLearn=flow.get('oxygenLearn');\nif (/^learn:(?:[0-9]|1[0-5])$/.test(msg.topic) && previousLearn===Number(msg.topic.split(':')[1])) {\n    msg.topic=flow.get('oxygenReady') && !flow.get('oxygenNeedsRestart')?'oxygen':'monitor';\n}\nif (/^learn:/.test(msg.topic) && flow.get('dashboardPending')) { node.warn('Wait for the profile save'); return null; }\nflow.set('wsMidiRun',null); flow.set('oxygenPending',{}); flow.set('oxygenLearn',null); flow.set('oxygenLearnRack',null);\nif (/^learn:(?:[0-9]|1[0-5])$/.test(msg.topic)) {\n    if (!device) { node.warn('Connect to a rack before learning'); return null; }\n    flow.set('oxygenLearnRack',device);\n    flow.set('wsMidiSource','monitor');\n    flow.set('oxygenLearn',Number(msg.topic.split(':')[1]));\n    node.status({fill:'yellow',shape:'dot',text:'Move the control for axis '+flow.get('oxygenLearn')});\n} else {\n    let source = ['oxygen','synthetic','monitor'].includes(msg.topic) ? msg.topic : 'monitor';\n    if (source==='oxygen' && (!flow.get('oxygenReady') || flow.get('oxygenNeedsRestart'))) {\n        source='monitor'; node.warn('Oxygen unavailable or needs Node-RED restart after reconnect');\n    }\n    flow.set('wsMidiSource',source);\n    if (source!=='monitor') flow.set('wsHeartbeats',true);\n    node.status({fill:source==='monitor'?'yellow':'green',shape:'dot',text:source});\n}\nreturn {device,session:client?client.session:null,topic:'disarm'};\n",
+    "outputs": 1,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "wires": [
+      [
+        "sr-ws-command"
+      ]
+    ]
+  },
+  {
+    "id": "sr-oxygen-flush-clock",
+    "type": "inject",
+    "z": "sr-ws-tab",
+    "name": "Live target flush 50 Hz",
+    "x": 180,
+    "y": 1560,
+    "props": [
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "0.02",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "flush",
+    "wires": [
+      [
+        "sr-oxygen-flush"
+      ]
+    ]
+  },
+  {
+    "id": "sr-oxygen-flush",
+    "type": "function",
+    "z": "sr-ws-tab",
+    "name": "Latest live CC per axis",
+    "x": 490,
+    "y": 1560,
+    "func": "const pending = flow.get('oxygenPending') || {};\nif (flow.get('wsMidiSource')!=='oxygen' || !flow.get('oxygenReady') || flow.get('oxygenNeedsRestart') || flow.get('wsHeartbeats')===false) { flow.set('oxygenPending',{}); return null; }\nconst c = Object.values(flow.get('wsClients') || {}).find(c=>c.device===flow.get('selectedRack') && c.live && c.state==='ARMED' && Date.now()-c.seen<1000);\nif (!c) { flow.set('oxygenPending',{}); return null; }\nfor (const key of Object.keys(pending)) if (pending[key].device!==c.device || pending[key].session!==c.session) delete pending[key];\nconst cursor=flow.get('oxygenFlushCursor') || 0;\nconst axes=Object.keys(pending).map(Number).sort((a,b)=>(a-cursor+16)%16-(b-cursor+16)%16).slice(0,4);\nconst outgoing=axes.map(axis=>pending[axis]);\nfor (const axis of axes) delete pending[axis];\nif (axes.length) flow.set('oxygenFlushCursor',(axes[axes.length-1]+1)%16);\nflow.set('oxygenPending',pending);\nreturn outgoing.length ? [outgoing] : null;\n",
+    "outputs": 1,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "wires": [
+      [
+        "sr-ws-midi-send"
+      ]
+    ]
+  },
+  {
+    "id": "sr-oxygen-health-clock",
+    "type": "inject",
+    "z": "sr-ws-tab",
+    "name": "Check USB presence",
+    "x": 160,
+    "y": 1640,
+    "props": [
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "0.25",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "health",
+    "wires": [
+      []
+    ]
+  },
+  {
+    "id": "sr-oxygen-health",
+    "type": "function",
+    "z": "sr-ws-tab",
+    "name": "USB loss \u2192 Disarm + revoke lease",
+    "x": 770,
+    "y": 1640,
+    "func": "const match = String(msg.payload || '').match(/client (\\d+): 'Oxygen 49'/);\nconst identity = match ? match[1] : null;\nconst previous = flow.get('oxygenClient');\nconst lost = previous && identity !== previous;\nif (lost) flow.set('oxygenNeedsRestart',true);\nflow.set('oxygenClient',identity);\nflow.set('oxygenReady',!!identity);\nif (flow.get('wsMidiSource')==='oxygen' && (!identity || flow.get('oxygenNeedsRestart'))) {\n    flow.set('wsMidiSource','monitor'); flow.set('wsMidiRun',null); flow.set('oxygenPending',{});\n    // If the Disarm frame cannot get through, the ESP32 heartbeat watchdog still expires.\n    flow.set('wsHeartbeats',false);\n    node.status({fill:'red',shape:'dot',text:'USB lost; reconnect then restart Node-RED'});\n    return {topic:'disarm'};\n}\nnode.status({fill:identity?'green':'red',shape:'dot',text:flow.get('oxygenNeedsRestart')?'Restart Node-RED to reopen MIDI':identity?'Oxygen present':'Oxygen absent'});\nreturn null;",
+    "outputs": 1,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "wires": [
+      [
+        "sr-ws-command"
+      ]
+    ]
+  },
+  {
+    "id": "sr-dashboard-base",
+    "type": "ui-base",
+    "name": "ServoRack",
+    "path": "/dashboard",
+    "appIcon": "",
+    "includeClientData": true,
+    "acceptsClientConfig": [
+      "ui-template"
+    ],
+    "showPathInSidebar": false,
+    "headerContent": "page",
+    "navigationStyle": "default",
+    "titleBarStyle": "hidden",
+    "showReconnectNotification": true,
+    "notificationDisplayTime": 2,
+    "showDisconnectNotification": true,
+    "allowInstall": false
+  },
+  {
+    "id": "sr-dashboard-theme",
+    "type": "ui-theme",
+    "name": "ServoRack",
+    "colors": {
+      "surface": "#ffffff",
+      "primary": "#16796c",
+      "bgPage": "#f4f7f5",
+      "groupBg": "#f4f7f5",
+      "groupOutline": "#f4f7f5"
+    },
+    "sizes": {
+      "density": "default",
+      "pagePadding": "16px",
+      "groupGap": "12px",
+      "groupBorderRadius": "12px",
+      "widgetGap": "12px"
+    }
+  },
+  {
+    "id": "sr-dashboard-page",
+    "type": "ui-page",
+    "name": "ServoRack",
+    "ui": "sr-dashboard-base",
+    "path": "/servos",
+    "icon": "tune",
+    "layout": "grid",
+    "theme": "sr-dashboard-theme",
+    "breakpoints": [
+      {
+        "name": "Phone",
+        "px": 0,
+        "cols": 12
+      },
+      {
+        "name": "Desktop",
+        "px": 1024,
+        "cols": 12
+      }
+    ],
+    "order": 1,
+    "className": "",
+    "visible": true,
+    "disabled": false
+  },
+  {
+    "id": "sr-dashboard-group",
+    "type": "ui-group",
+    "name": "Configuration",
+    "page": "sr-dashboard-page",
+    "width": 12,
+    "height": 1,
+    "order": 1,
+    "showTitle": false,
+    "className": "",
+    "visible": true,
+    "disabled": false,
+    "groupType": "default"
+  },
+  {
+    "id": "sr-dashboard-template",
+    "type": "ui-template",
+    "z": "sr-ws-tab",
+    "group": "sr-dashboard-group",
+    "page": "",
+    "ui": "",
+    "name": "Servo dashboard",
+    "order": 1,
+    "width": 12,
+    "height": 0,
+    "head": "",
+    "format": "<template>\n  <main class=\"sr-config\">\n    <header>\n      <div><span class=\"sr-eyebrow\">ServoRack</span><h1>MIDI Mapping</h1></div>\n      <v-btn color=\"error\" variant=\"flat\" @click=\"control('disarm')\">Disarm all</v-btn>\n    </header>\n    <form class=\"sr-rack-picker\" @submit.prevent=\"connectRack\">\n      <v-text-field label=\"Rack address\" v-model=\"rackAddress\" @update:model-value=\"rackAddressDirty=true;rackError=''\" hide-details density=\"compact\" variant=\"outlined\" autocomplete=\"off\" :spellcheck=\"false\"></v-text-field>\n      <v-btn type=\"submit\" color=\"teal\" variant=\"flat\" :disabled=\"!canConnectRack\">Connect</v-btn>\n      <v-btn type=\"button\" variant=\"text\" :disabled=\"!live.rackConnection || !live.rackConnection.wanted\" @click=\"disconnectRack\">Disconnect</v-btn>\n      <span class=\"sr-rack-status\" role=\"status\"><span class=\"sr-rack-dot\" :class=\"{'sr-rack-online':live.rackConnection && live.rackConnection.state==='connected','sr-rack-waiting':live.rackConnection && live.rackConnection.wanted && live.rackConnection.state!=='connected'}\" aria-hidden=\"true\"></span>{{rackStatus}}</span>\n    </form>\n    <p v-if=\"rackError\" class=\"sr-rack-error\" role=\"alert\">{{rackError}}</p>\n    <div class=\"sr-picker\">\n      <v-select label=\"MIDI input device\" :items=\"live.midiDevices || []\" item-title=\"title\" item-value=\"value\" v-model=\"midiDevice\" @update:model-value=\"selectMidi\" hide-details density=\"compact\" no-data-text=\"No MIDI inputs detected\">\n        <template #append-inner>\n          <button type=\"button\" class=\"sr-midi-refresh\" aria-label=\"Refresh MIDI devices\" @mousedown.stop.prevent @click.stop=\"send({payload:{action:'midi-refresh'}})\">\n            <svg viewBox=\"0 0 24 24\" width=\"20\" height=\"20\" aria-hidden=\"true\"><path fill=\"currentColor\" d=\"M17.65 6.35A7.95 7.95 0 0 0 12 4a8 8 0 1 0 7.75 10h-2.1A6 6 0 1 1 12 6c1.66 0 3.14.69 4.22 1.78L13 11h7V4z\"/></svg>\n          </button>\n        </template>\n      </v-select>\n    </div>\n    <v-alert v-if=\"live.notice\" density=\"compact\" variant=\"tonal\" type=\"info\" class=\"mb-5\">{{live.notice}}</v-alert>\n    <v-alert v-if=\"live.connected && !live.supported\" density=\"compact\" variant=\"tonal\" type=\"info\" class=\"mb-5\">Profile editing needs the updated ESP32 firmware. MIDI control remains available.</v-alert>\n    <p v-if=\"live.connected && !live.axisArmSupported\" class=\"sr-meta\">Flash the updated firmware to enable individual Arm switches.</p>\n    <div class=\"sr-table-wrap\">\n      <table class=\"sr-table\" aria-label=\"Servo channels\">\n        <colgroup><col class=\"sr-col-arm\"><col class=\"sr-col-name\"><col class=\"sr-col-rotation\"><col class=\"sr-col-channel\"><col class=\"sr-col-cc\"><col class=\"sr-col-value\"><col class=\"sr-col-actions\"></colgroup>\n        <thead><tr><th>Arm</th><th>Servo name</th><th>Rotation</th><th>MIDI ch.</th><th>CC</th><th>Value</th><th>Actions</th></tr></thead>\n        <tbody><tr v-for=\"row in rows\" :key=\"row.axis\" :data-servo=\"row.axis\" :class=\"{'sr-listening':live.learning===row.axis}\">\n          <td class=\"sr-arm-cell\"><v-switch :model-value=\"!!row.armed\" :aria-label=\"'Arm servo '+row.axis\" color=\"teal\" density=\"compact\" hide-details inset :disabled=\"!live.axisArmSupported || live.axisArmPending || !live.connected || (!row.armed && (!!live.armBlocked))\" @update:model-value=\"armAxis(row.axis,$event)\"></v-switch></td>\n          <td class=\"sr-servo-name\"><span :title=\"row.name\">{{row.name}}</span></td>\n          <td>{{row.current==null?'\u2014':row.current+'\u00b0'}}</td>\n          <td>{{row.channel===null?'\u2014':row.channel}}</td><td>{{row.cc===null?'\u2014':row.cc}}</td><td class=\"sr-value-cell\"><span :key=\"row.activity || 0\" class=\"sr-midi-dot\" :class=\"{'sr-midi-active':!!row.activity}\" role=\"img\" :aria-label=\"row.activity?'MIDI activity':'No MIDI activity'\"></span><span>{{row.value===null?'\u2014':row.value}}</span></td>\n          <td class=\"sr-row-actions\">\n            <v-tooltip location=\"top\" :text=\"live.learning===row.axis?'Stop listening':'Learn MIDI control'\">\n              <template #activator=\"{props}\">\n                <span class=\"sr-action-wrap\" v-bind=\"props\">\n                  <button type=\"button\" class=\"sr-icon-action\" :class=\"{'sr-icon-listening':live.learning===row.axis}\" :disabled=\"!canLearn\" :aria-label=\"'Learn servo '+row.axis\" :aria-pressed=\"live.learning===row.axis\" @click=\"learn(row.axis)\">\n                    <svg viewBox=\"0 0 24 24\" width=\"19\" height=\"19\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M6 8.5a6.5 6.5 0 1 1 13 0c0 3-2 4-3.5 5.5-1 1-1.5 2-1.5 3.5a3.5 3.5 0 0 1-7 0M9 9a3 3 0 0 1 6 0c0 1.5-2 2-2 3.5\"/></svg>\n                    <span v-if=\"live.learning===row.axis\" class=\"sr-listening-dot\" aria-hidden=\"true\"></span>\n                  </button>\n                </span>\n              </template>\n            </v-tooltip>\n            <v-tooltip location=\"top\" text=\"Edit servo\">\n              <template #activator=\"{props}\">\n                <span class=\"sr-action-wrap\" v-bind=\"props\">\n                  <button type=\"button\" class=\"sr-icon-action\" :disabled=\"!live.supported || live.pending\" :aria-label=\"'Edit servo '+row.axis\" @click=\"edit(row.axis)\">\n                    <svg viewBox=\"0 0 24 24\" width=\"19\" height=\"19\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"m15 5 4 4M4 16l-1 5 5-1L20 8a2.8 2.8 0 0 0-4-4Z\"/></svg>\n                  </button>\n                </span>\n              </template>\n            </v-tooltip>\n          </td>\n        </tr></tbody>\n      </table>\n    </div>\n    <v-dialog v-model=\"editing\" max-width=\"1000\" scrollable :persistent=\"!!live.pending\">\n      <v-card class=\"sr-config sr-dialog\" density=\"compact\">\n        <v-card-title class=\"sr-dialog-title\">Edit servo {{selected}}<v-btn variant=\"text\" size=\"small\" :disabled=\"live.pending\" @click=\"editing=false\">Close</v-btn></v-card-title>\n        <v-card-text>\n          <v-alert v-if=\"live.notice\" density=\"compact\" variant=\"tonal\" type=\"info\" class=\"mb-3\">{{live.notice}}</v-alert>\n    <form v-if=\"draft\" @submit.prevent=\"save\">\n      <div class=\"sr-panels\" @input=\"dirty=true\" @change=\"dirty=true\">\n        <section class=\"sr-panel\">\n          <v-text-field label=\"Servo name\" v-model=\"draft.mapping.name\" maxlength=\"40\"></v-text-field>\n          <div class=\"sr-fields\">\n            <v-text-field label=\"MIDI channel\" type=\"number\" min=\"1\" max=\"16\" v-model=\"draft.mapping.channel\"></v-text-field>\n            <v-text-field label=\"Controller (CC)\" type=\"number\" min=\"0\" max=\"119\" v-model=\"draft.mapping.cc\"></v-text-field>\n          </div>\n          <v-btn variant=\"outlined\" :disabled=\"!canLearn\" @click=\"learn(selected)\">Learn this control</v-btn>\n          <v-switch label=\"Reverse direction\" color=\"teal\" v-model=\"draft.profile.reversed\" hide-details></v-switch>\n        </section>\n        <section class=\"sr-panel\">\n          <v-text-field label=\"Rated rotation (degrees)\" type=\"number\" min=\"1\" max=\"360\" v-model=\"draft.profile.range_deg\"></v-text-field>\n          <div class=\"sr-fields\">\n            <v-text-field label=\"Allowed minimum (degrees)\" type=\"number\" min=\"0\" :max=\"draft.profile.range_deg\" v-model=\"draft.profile.min_deg\"></v-text-field>\n            <v-text-field label=\"Allowed maximum (degrees)\" type=\"number\" min=\"1\" :max=\"draft.profile.range_deg\" v-model=\"draft.profile.max_deg\"></v-text-field>\n          </div>\n        </section>\n        <section class=\"sr-panel\">\n          <v-text-field label=\"PCA9685 output channel\" type=\"number\" min=\"0\" max=\"15\" v-model=\"draft.profile.channel\"></v-text-field>\n          <div class=\"sr-fields sr-three\">\n            <v-text-field label=\"0\u00b0 pulse (\u00b5s)\" type=\"number\" min=\"500\" max=\"2500\" v-model=\"draft.profile.min_us\"></v-text-field>\n            <v-text-field label=\"Midpoint pulse (\u00b5s)\" type=\"number\" min=\"500\" max=\"2500\" v-model=\"draft.profile.center_us\"></v-text-field>\n            <v-text-field label=\"Maximum pulse (\u00b5s)\" type=\"number\" min=\"500\" max=\"2500\" v-model=\"draft.profile.max_us\"></v-text-field>\n          </div>\n        </section>\n      </div>\n      <footer style=\"justify-content:flex-end\">\n        <span v-if=\"savedAxis===selected && !dirty && !live.pending\" class=\"sr-save-confirmation\" role=\"status\">Servo {{selected}} mapping saved</span>\n        <v-btn type=\"submit\" color=\"teal\" variant=\"flat\" :loading=\"live.pending\" :disabled=\"live.state!=='DISARMED' || !live.supported || live.pending || live.unknown\">Save configuration</v-btn>\n      </footer>\n    </form>\n    <p v-else class=\"sr-empty\">Loading profile from the ESP32\u2026</p>\n        </v-card-text>\n      </v-card>\n    </v-dialog>\n  </main>\n</template>\n<script>\nexport default {\n  data(){return {selected:0,editing:false,savedAxis:null,midiDevice:null,draft:null,dirty:false,migrating:false,rackAddress:'',rackAddressDirty:false,rackError:'',live:{state:'OFFLINE',source:'synthetic'}}},\n  computed:{\n    canConnectRack(){return !!this.rackAddress.trim() && !this.live.pending && (!this.live.rackConnection || !this.live.rackConnection.wanted || this.rackAddressDirty)},\n    rackStatus(){return ({connected:'Connected',connecting:'Connecting\u2026',handshake:'Connecting\u2026',reconnecting:'Reconnecting\u2026',disconnected:'Disconnected'})[this.live.rackConnection && this.live.rackConnection.state] || 'Disconnected'},\n    canLearn(){return !!this.live.device && !!this.live.midiSelected && !!this.live.oxygen && !this.live.pending},\n    rows(){return this.live.rows || Array.from({length:16},(_,axis)=>({axis,name:'Servo '+axis,rotation:null,channel:null,cc:null,value:null}))}\n  },\n  watch:{msg:{handler(message){\n    const p=message && message.payload;\n    if(!p || !p.kind) return;\n    if((this.live.session && p.session!==undefined && p.session!==this.live.session) ||\n       (this.live.device && p.device!==undefined && p.device!==this.live.device)) {\n      this.editing=false;this.draft=null;this.dirty=false;this.savedAxis=null;\n    }\n    this.live={...this.live,...p};\n    if(p.kind==='rack-error') this.rackError=p.rackError;\n    if(p.kind==='rack-selected') {this.rackAddressDirty=false;this.rackError='';}\n    if(p.rackConnection && !this.rackAddressDirty) this.rackAddress=this.displayRackAddress(p.rackConnection.address);\n    if(p.kind==='saved') this.savedAxis=p.axis;\n    if(this.midiDevice===null) this.midiDevice=p.midiSelected || null;\n    if(p.kind==='learned' && p.draft && p.axis===this.selected && this.draft) this.draft.mapping=p.draft.mapping;\n    if(p.draft && p.axis===this.selected && (p.kind==='saved' || !this.dirty)) {\n      this.draft=JSON.parse(JSON.stringify(p.draft)); this.dirty=false; this.migrating=!!p.migrating;\n    }\n    if(p.kind==='loaded' && !p.draft && p.axis===this.selected) this.draft=null;\n  },deep:true}},\n  mounted(){this.send({payload:{action:'status'}})},\n  methods:{\n    displayRackAddress(value){try{return new URL(value).host}catch(_){return value || ''}},\n    connectRack(){if(!this.canConnectRack)return;this.rackError='';this.send({payload:{action:'rack-connect',address:this.rackAddress.trim()}})},\n    disconnectRack(){this.rackError='';this.send({payload:{action:'rack-disconnect'}})},\n    servoRequest(payload){this.send({payload:{...payload,device:this.live.device,session:this.live.session}})},\n    armAxis(axis,armed){this.servoRequest({action:'axis-arm',axis,armed})},\n    selectMidi(){this.send({payload:{action:\"midi-select\",device:this.midiDevice}})},\n    load(){this.savedAxis=null;this.dirty=false;this.draft=null;this.servoRequest({action:'load',axis:this.selected})},\n    control(command){this.servoRequest({action:'control',command})},\n    edit(axis){this.selected=axis;this.editing=true;this.load()},\n    learn(axis){this.servoRequest({action:'learn',axis})},\n    save(){\n      this.savedAxis=null;\n      const d=JSON.parse(JSON.stringify(this.draft));\n      d.profile.enabled=true;\n      for(const key of ['channel','min_us','center_us','max_us','range_deg','min_deg','max_deg']) d.profile[key]=Number(d.profile[key]);\n      d.mapping.channel=Number(d.mapping.channel);d.mapping.cc=Number(d.mapping.cc);\n      this.servoRequest({action:'save',...d});\n    }\n  }\n}\n</script>\n<style>\n.sr-config{width:100%;min-width:0;max-width:1180px;margin:auto;padding:16px;color:#20343c}.sr-config header{display:flex;align-items:center;justify-content:space-between;gap:20px;margin-bottom:12px}.sr-eyebrow{font-size:11px;letter-spacing:2px;color:#407971;font-weight:700}.sr-config h1{font-size:24px;font-weight:650;letter-spacing:-.7px;margin-top:5px}.sr-toolbar{display:flex;gap:10px;flex-wrap:wrap}.sr-meta{font-size:13px;margin:8px 0;color:#52676c}.sr-picker{display:flex;align-items:center;gap:16px;margin:12px 0;max-width:650px}.sr-panels{display:grid;grid-template-columns:1fr 1fr;gap:18px}.sr-panel{padding:16px;border:1px solid #dbe5e1;border-radius:12px;background:#fff}.sr-panel:last-child{grid-column:1/-1}.sr-config h2{font-size:18px;font-weight:650;margin-bottom:6px}.sr-panel>p{font-size:13px;color:#5b6f74;margin-bottom:20px}.sr-fields{display:grid;grid-template-columns:1fr 1fr;gap:14px}.sr-three{grid-template-columns:1fr 1fr 1fr}.sr-help{font-size:12px!important;line-height:1.7;margin-top:14px;margin-bottom:0!important}.sr-config footer{display:flex;justify-content:space-between;gap:20px;align-items:center;margin-top:24px}.sr-config footer p,.sr-empty{font-size:13px;color:#52676c}.sr-empty{padding:30px 0}@media(max-width:760px){.sr-config{padding:4px}.sr-panels,.sr-fields,.sr-three{grid-template-columns:1fr}.sr-config h1{font-size:24px}.sr-picker,.sr-config footer{align-items:stretch;flex-direction:column}.sr-panel{padding:18px}.sr-config header{align-items:flex-start}}\n.sr-arm-cell{width:58px}.sr-arm-cell .v-switch{height:30px}.sr-arm-cell .v-input__control{min-height:30px!important}.sr-table-wrap{overflow-x:auto;margin-top:12px;border:1px solid #dbe5e1;border-radius:8px}.sr-table{border-collapse:collapse;table-layout:fixed;width:100%;min-width:720px;font-size:13px;white-space:nowrap}.sr-table th,.sr-table td{text-align:left;padding:4px 12px;height:34px;border-bottom:1px solid #e7eeeb}.sr-table th{font-size:11px;color:#52676c;background:#edf3f0;height:32px}.sr-table tbody tr:last-child td{border-bottom:0}.sr-table tbody tr:hover{background:#f5faf7}.sr-name{margin-left:12px}.sr-muted{color:#6f7e83;font-size:11px}.sr-row-actions{width:100px}.sr-action-wrap{display:inline-flex;vertical-align:middle;margin-right:4px}.sr-icon-action{position:relative;display:grid;place-items:center;width:32px;height:30px;padding:0;border:0;border-radius:5px;background:transparent;color:#52676c;cursor:pointer}.sr-icon-action:hover:not(:disabled){background:#dfe9e5;color:#16796c}.sr-icon-action:focus-visible{outline:2px solid #16796c;outline-offset:1px}.sr-icon-action:disabled{opacity:.35;cursor:default}.sr-icon-listening{color:#16796c}.sr-listening-dot{position:absolute;top:3px;right:3px;width:5px;height:5px;border-radius:50%;background:#16796c;animation:sr-dot-pulse 1s ease-in-out infinite}@keyframes sr-dot-pulse{50%{opacity:.25}}@media(prefers-reduced-motion:reduce){.sr-listening-dot{animation:none}}.sr-dialog{width:100%;padding:0;max-width:none;background:#f4f7f5!important}.sr-dialog-title{display:flex;justify-content:space-between;align-items:center}.sr-dialog .sr-panels{gap:12px}.sr-dialog .v-card-text{padding:12px 20px!important}.sr-dialog footer{margin:12px 0}.sr-config .v-input{font-size:13px}\n.sr-midi-refresh{display:grid;place-items:center;width:32px;height:32px;flex:0 0 32px;padding:0;border:0;border-radius:50%;background:transparent;color:#52676c;cursor:pointer;clip-path:none}.sr-midi-refresh:hover{background:#dfe9e5}.sr-midi-refresh:focus-visible{outline:2px solid #16796c;outline-offset:2px}.sr-midi-refresh svg{pointer-events:none}.sr-config header>.v-btn{flex-shrink:0}\n.sr-arm-cell .v-selection-control{min-height:30px!important}.sr-arm-cell .v-selection-control__wrapper,.sr-arm-cell .v-selection-control__input{height:30px!important}\n.sr-table tbody tr.sr-listening{animation:sr-listening-pulse 2s ease-in-out infinite}\n@keyframes sr-listening-pulse{0%,100%{background-color:rgba(22,121,108,.035)}50%{background-color:rgba(22,121,108,.14)}}\n@media(prefers-reduced-motion:reduce){.sr-table tbody tr.sr-listening{animation:none;background-color:rgba(22,121,108,.10)}}\n.sr-save-confirmation{font-size:13px;color:#16796c}\n.sr-value-cell{white-space:nowrap}.sr-value-cell .sr-midi-dot{margin-right:8px}.sr-midi-dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#cbd7d1;vertical-align:middle}.sr-midi-active{animation:sr-midi-flash .3s ease-out forwards}@keyframes sr-midi-flash{0%,35%{background:#169b7c;box-shadow:0 0 5px #169b7c66}100%{background:#cbd7d1;box-shadow:none}}@media(prefers-reduced-motion:reduce){.sr-midi-active{animation:none;background:#169b7c}}\n.sr-col-arm{width:64px}.sr-col-rotation{width:100px}.sr-col-channel{width:80px}.sr-col-cc{width:64px}.sr-col-value{width:88px}.sr-col-actions{width:104px}.sr-servo-name span{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}\n\n.sr-rack-picker{display:flex;align-items:center;gap:10px;margin:16px 0 12px}.sr-rack-picker>.v-input{flex:1 1 260px;min-width:0;max-width:440px}.sr-rack-picker>.v-btn{flex-shrink:0}.sr-rack-status{display:inline-flex;align-items:center;gap:7px;white-space:nowrap;font-size:12px;color:#52676c}.sr-rack-dot{width:7px;height:7px;flex-shrink:0;border-radius:50%;background:#a6b5ae}.sr-rack-online{background:#169b7c}.sr-rack-waiting{background:#b28b33}.sr-rack-error{font-size:13px;color:#ac3535;margin:-4px 0 12px}@media(max-width:640px){.sr-rack-picker{flex-wrap:wrap}.sr-rack-picker>.v-input{flex-basis:100%;max-width:none}.sr-rack-status{margin-left:auto}}\n</style>\n",
+    "noerr": 0,
+    "storeOutMessages": false,
+    "passthru": false,
+    "resendOnRefresh": true,
+    "templateScope": "local",
+    "className": "",
+    "x": 170,
+    "y": 1800,
+    "wires": [
+      [
+        "sr-dashboard-controller"
+      ]
+    ]
+  },
+  {
+    "id": "sr-dashboard-controller",
+    "type": "function",
+    "z": "sr-ws-tab",
+    "name": "Validate / save dashboard configuration",
+    "x": 530,
+    "y": 1800,
+    "func": "// Node-RED function body, embedded in websocket-control.json.\nconst device = flow.get('selectedRack');\nconst settings = flow.get('rackSettings','servorack') || {};\nconst rack = settings[device] || {mappings:{},names:{},unconfirmed:false};\nconst clients = flow.get('wsClients') || {};\nconst c = Object.values(clients).find(c => c.device === device && Date.now()-c.seen < 1000);\nconst request = msg.payload || {};\nif (/^(Profile loaded\\.|Reading device profile|Servo arm state|Updating servo arm state|Move the chosen MIDI|MIDI assignment learned|Saved on ESP32)/.test(flow.get('dashboardNotice') || '')) flow.set('dashboardNotice','');\nconst profiles = flow.get('axisProfiles') || {};\nlet pending = flow.get('dashboardPending');\nfunction mappings() { return rack.mappings || {}; }\nfunction names() { return rack.names || {}; }\nfunction persist() { settings[device]=rack; flow.set('rackSettings',settings,'servorack'); }\nfunction rows() {\n    const assigned=mappings(), labels=names();\n    return Array.from({length:16},(_,axis)=>{\n        const route=Object.entries(assigned).find(([,r])=>r.axis===axis);\n        const record=profiles[axis], profile=record && c && record.device===device && record.session===c.session ? record.profile : null;\n        const travel=profile ? [profile.range_deg,profile.min_deg,profile.max_deg] : c && c.travel && c.travel[axis];\n        const ccValue=route && (flow.get('midiCcValues') || {})[route[0]];\n        const value=ccValue && ccValue.device===flow.get('midiSelected')?ccValue.value:null;\n        const reversed=profile?profile.reversed:travel && travel.length===4?travel[3]===1:null;\n        let current=null;\n        if(value!==null && travel && reversed!==null) {\n            let normalized=value<=64?Math.round(value*500/64):500+Math.round((value-64)*500/63);\n            if(reversed) normalized=1000-normalized;\n            current=Math.round(travel[1]+(travel[2]-travel[1])*normalized/1000);\n        }\n        const [channel,cc]=route?route[0].split(':').map(Number):[null,null];\n        const activity=route && (flow.get('midiControlActivity') || {})[route[0]];\n        const recent=activity && activity.device===flow.get('midiSelected') && Date.now()-activity.at<500;\n        return {axis,activity:recent?activity.sequence:0,armed:!!(c && c.live && c.state==='ARMED' && (c.armedMask & (1<<axis))),name:labels[axis] || 'Servo '+axis,channel,cc,\n            rotation:travel?travel[0]:null,min:travel?travel[1]:null,max:travel?travel[2]:null,\n            value,current};\n    });\n}\nfunction armBlocked() {\n    if (!c || !c.live) return 'Waiting for a live controller connection.';\n    if (flow.get('dashboardPending') || rack.unconfirmed) return 'Finish the configuration save or reload the device profile before arming.';\n    if (!['DISARMED','ARMED'].includes(c.state)) return 'Wait for the controller to finish its current action.';\n    const source=flow.get('wsMidiSource') || 'synthetic';\n    if (source==='monitor') return 'Select a MIDI input or finish learning an assignment before arming.';\n    if (source==='oxygen' && (!flow.get('oxygenReady') || flow.get('oxygenNeedsRestart'))) return 'Select an available MIDI input before arming.';\n    if (flow.get('wsHeartbeats')===false) return 'Resume heartbeats or select a control source before arming.';\n    return '';\n}\nfunction status(text, kind='status', axis) {\n    if (text) flow.set('dashboardNotice',text);\n    return { _client:msg._client, payload:{kind, axis, notice:flow.get('dashboardNotice') || '',\n        device:device || null, session:c?c.session:null,\n        rackConnection:flow.get('rackConnection') || {address:flow.get('rackAddress','servorack') || '',state:'disconnected',wanted:false},\n        connected:!!(c && c.live), supported:!!(c && c.profiles===1), state:c?c.state:'OFFLINE',\n        source:flow.get('wsMidiSource') || 'synthetic', oxygen:!!flow.get('oxygenReady'),\n        pending:!!flow.get('dashboardPending'), unknown:!!rack.unconfirmed,\n        axisArmSupported:!!(c && c.axisArm===1), axisArmPending:!!flow.get('axisArmPending'), armBlocked:armBlocked(), rows:rows(), learning:flow.get('oxygenLearnRack')===device?flow.get('oxygenLearn'):null, midiDevices:flow.get('midiDevices') || [], midiSelected:flow.get('midiSelected') || '',\n        midi:flow.get('lastOxygenCc') || null, mappings:mappings(), names:names()} };\n}\nfunction routeFor(axis) { return Object.entries(mappings()).find(([,r])=>r.axis===axis); }\nfunction view(axis, kind='loaded') {\n    const record = profiles[axis];\n    const out = status('',kind,axis);\n    if (!record || !c || record.device!==device || record.session!==c.session) return out;\n    const route = routeFor(axis), profile = {...record.profile};\n    const [channel,cc] = route ? route[0].split(':').map(Number) : [1,16+axis];\n    out.payload.draft={axis,revision:record.revision,profile,\n        mapping:{channel,cc,name:names()[axis] || 'Servo '+axis}};\n    return out;\n}\nfunction fail(text) { return [null,status(text),null]; }\nfunction wire(payload) {\n    const message={v:1,...payload,session:c.session,id:++c.id};\n    flow.set('wsClients',clients);\n    return {_session:c.route,payload:JSON.stringify(message)};\n}\nfunction integer(v,min,max) { return Number.isInteger(v) && v>=min && v<=max; }\nfunction valid(p) {\n    return p && typeof p.enabled==='boolean' && typeof p.reversed==='boolean' &&\n        integer(p.channel,0,15) && integer(p.min_us,500,2500) && integer(p.center_us,500,2500) &&\n        integer(p.max_us,500,2500) && p.min_us<p.center_us && p.center_us<p.max_us &&\n        integer(p.range_deg,1,360) && integer(p.min_deg,0,p.range_deg) &&\n        integer(p.max_deg,1,p.range_deg) && p.min_deg<p.max_deg;\n}\nif (pending && (pending.device!==device || !c || pending.session!==c.session || Date.now()-pending.started>10000)) {\n    const owner=pending.device;\n    if (owner) {\n        settings[owner]={mappings:{},names:{},...settings[owner],unconfirmed:true};\n        flow.set('rackSettings',settings,'servorack');\n        if (owner===device) rack.unconfirmed=true;\n    }\n    flow.set('dashboardPending',null); flow.set('dashboardUnknown',!!rack.unconfirmed); pending=null;\n    flow.set('dashboardNotice','Connection changed or save timed out. Reload the device profile before arming.');\n}\nif (msg.topic==='rack-status' || msg.topic==='rack-selected' || msg.topic==='rack-error') {\n    const result=status('',msg.topic==='rack-status'?'status':msg.topic);\n    if (msg.topic==='rack-error') result.payload.rackError=request.message || 'Unable to connect.';\n    return [null,result,null];\n}\nif (request.action==='rack-connect' || request.action==='rack-disconnect') {\n    if (request.action==='rack-connect' && flow.get('dashboardPending')) {\n        const result=status('','rack-error'); result.payload.rackError='Wait for the configuration save.';\n        return [null,result,null];\n    }\n    return [null,null,{route:'rack',topic:request.action,payload:request.address,_client:msg._client}];\n}\nif (msg.topic==='profile-event') {\n    const p=request;\n    if (!c || msg.device!==device || p.session!==c.session) return null;\n    if (p.type==='ack') {\n        if (pending && p.id===pending.id && p.accepted===false) {\n            flow.set('dashboardPending',null);\n            return fail('Device rejected the change. Reload its profile and check DISARMED state.');\n        }\n        return null;\n    }\n    if (!integer(p.axis,0,15) || !integer(p.revision,0,0xffffffff) || !valid(p.profile)) return null;\n    if (p.result==='current' || p.result==='saved') {\n        profiles[p.axis]={device,profile:p.profile,revision:p.revision,session:p.session};\n        for (const record of Object.values(profiles))\n            if (record.device===device && record.session===p.session) record.revision=p.revision;\n        flow.set('axisProfiles',profiles);\n    }\n    if (pending && p.id===pending.id && p.axis===pending.axis) {\n        flow.set('dashboardPending',null);\n        if (p.result!=='saved') return fail('Profile not saved: '+p.result+'. Settings remain unconfirmed.');\n        const map=mappings();\n        for (const key of Object.keys(map)) if (map[key].axis===p.axis) delete map[key];\n        map[pending.mapping.channel+':'+pending.mapping.cc]={axis:p.axis,min:0,max:127};\n        rack.mappings=map;\n        const labels=names(); labels[p.axis]=pending.mapping.name;\n        rack.names=labels; persist();\n        flow.set('oxygenPending',{});\n        flow.set('dashboardNotice','');\n        return [null,view(p.axis,'saved'),null];\n    }\n    if (p.result==='current') {\n        rack.unconfirmed=false; persist(); flow.set('dashboardUnknown',false);\n        return [null,view(p.axis),null];\n    }\n    return null;\n}\nif (msg.topic==='learned-event') return msg.device===device ? [null,view(request.axis,'learned'),null] : null;\nif (request.action==='status' || msg.topic==='tick') {\n    const change=flow.get('axisArmPending');\n    if(change && (change.device!==device || !c || change.session!==c.session || Date.now()-change.at>3000 ||\n        (c.state!=='CONFIGURING' && c.armedMask===change.mask))) { flow.set('axisArmPending',null); flow.set('dashboardNotice',''); }\n    return [null,status(),null];\n}\nif (request.action==='midi-select' || request.action==='midi-refresh') {\n    if (typeof request.device!=='string' && request.action==='midi-select') return fail('Select a MIDI input.');\n    return [null,status(),{route:'midi',topic:request.action,payload:request.device}];\n}\nif (['axis-arm','control','learn','load','save'].includes(request.action) &&\n    (!device || request.device!==device || request.session!==(c?c.session:null)))\n    return fail('Rack connection changed. Retry using the current rack.');\nif (request.action==='axis-arm') {\n    if(!c || !c.live || c.axisArm!==1) return fail('Flash firmware with individual servo arming support.');\n    if(!integer(request.axis,0,15) || typeof request.armed!=='boolean') return fail('Invalid servo arm request.');\n    if(flow.get('axisArmPending')) return fail('Wait for the current arm change to finish.');\n    if(!['ARMED','DISARMED'].includes(c.state)) return fail('Wait for the controller to finish its current action.');\n    if(request.armed && armBlocked()) return fail(armBlocked());\n    if(c.id>=0xffffffff) return fail('Reconnect the controller to reset its command counter.');\n    const mask=request.armed ? (c.armedMask || 0) | (1<<request.axis) : (c.armedMask || 0) & ~(1<<request.axis);\n    const pendingTargets=flow.get('oxygenPending') || {}; delete pendingTargets[request.axis]; flow.set('oxygenPending',pendingTargets);\n    const outgoing=wire({type:'arm',mask});\n    flow.set('axisArmPending',{device,mask,id:c.id,session:c.session,at:Date.now()});\n    return [outgoing,status(),null];\n}\nif (request.action==='control') {\n    if (request.command==='arm' && armBlocked()) return fail(armBlocked());\n    if (!['arm','disarm','oxygen','synthetic','monitor'].includes(request.command)) return fail('Unknown control.');\n    return [null,status(),{device,session:c?c.session:null,topic:request.command,\n        route:['arm','disarm'].includes(request.command)?'command':'source'}];\n}\nif (request.action==='learn') {\n    if (!integer(request.axis,0,15)) return fail('Invalid servo channel.');\n    if (!flow.get('midiSelected') || !flow.get('oxygenReady')) return fail('Select an available MIDI input before learning.');\n    if (flow.get('dashboardPending')) return fail('Wait for the profile save to complete.');\n    return [null,status(),{device,session:c?c.session:null,topic:'learn:'+request.axis,route:'source'}];\n}\nif (!c || !c.live || c.profiles!==1) return fail('Connect and flash profile-capable firmware, then reload.');\nif (!integer(request.axis,0,15) || c.id>=0xffffffff) return fail('Invalid axis or exhausted command counter.');\nif (request.action==='load') {\n    return [wire({type:'profile_get',axis:request.axis}),status(),null];\n}\nif (request.action!=='save') return null;\nif (flow.get('dashboardPending')) return fail('Another profile save is in progress.');\nif (c.state!=='DISARMED') return fail('Disarm the controller before saving configuration.');\nif (rack.unconfirmed) return fail('Reload the device profile before saving.');\nconst cached=profiles[request.axis];\nif (!cached || cached.device!==device || cached.session!==c.session || cached.revision!==request.revision)\n    return fail('Configuration changed or was not loaded. Reload before saving.');\nif (!valid(request.profile)) return fail('Check angle limits, pulse calibration and output channel.');\nconst m=request.mapping;\nif (!m || !integer(m.channel,1,16) || !integer(m.cc,0,119) || typeof m.name!=='string' || m.name.length>40)\n    return fail('Choose MIDI channel 1\u201316, CC 0\u2013119 and a name up to 40 characters.');\nconst conflict=mappings()[m.channel+':'+m.cc];\nif (conflict && conflict.axis!==request.axis) return fail('That MIDI channel/CC is already assigned to another servo.');\nfor (const [axis,record] of Object.entries(profiles)) {\n    if (record.device===device && record.session===c.session && Number(axis)!==request.axis && request.profile.enabled && record.profile.enabled && record.profile.channel===request.profile.channel)\n        return fail('That PCA9685 output is already assigned to another enabled servo.');\n}\nconst outgoing=wire({type:'profile_set',axis:request.axis,revision:request.revision,profile:request.profile});\nflow.set('oxygenPending',{}); flow.set('oxygenLearn',null);\nflow.set('dashboardPending',{device,axis:request.axis,id:c.id,session:c.session,started:Date.now(),mapping:{...m,name:m.name.trim()}});\nreturn [outgoing,status('Saving on ESP32\u2026'),null];\n",
+    "outputs": 3,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "wires": [
+      [
+        "sr-rack-connection"
+      ],
+      [
+        "sr-dashboard-updates"
+      ],
+      [
+        "sr-dashboard-actions"
+      ]
+    ]
+  },
+  {
+    "id": "sr-dashboard-actions",
+    "type": "function",
+    "z": "sr-ws-tab",
+    "name": "Dashboard controls \u2192 existing interlocks",
+    "x": 910,
+    "y": 1800,
+    "func": "return msg.route==='rack'?[null,null,null,msg]:msg.route==='midi'?[null,null,msg,null]:msg.route==='command'?[msg,null,null,null]:[null,msg,null,null];",
+    "outputs": 4,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "wires": [
+      [
+        "sr-ws-command"
+      ],
+      [
+        "sr-oxygen-select"
+      ],
+      [
+        "sr-oxygen-input"
+      ],
+      [
+        "sr-rack-connection"
+      ]
+    ]
+  },
+  {
+    "id": "sr-dashboard-tick",
+    "type": "inject",
+    "z": "sr-ws-tab",
+    "name": "Dashboard status",
+    "props": [
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "0.1",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "tick",
+    "x": 170,
+    "y": 1860,
+    "wires": [
+      [
+        "sr-dashboard-controller"
+      ]
+    ]
+  },
+  {
+    "id": "sr-rack-connection",
+    "type": "servorack connection",
+    "z": "sr-ws-tab",
+    "name": "Rack connection",
+    "address": "",
+    "x": 160,
+    "y": 120,
+    "wires": [
+      [
+        "sr-ws-receive"
+      ],
+      [
+        "sr-ws-debug",
+        "sr-dashboard-controller"
+      ]
+    ]
+  },
+  {
+    "id": "sr-dashboard-updates",
+    "type": "function",
+    "z": "sr-ws-tab",
+    "name": "Send changed dashboard data",
+    "x": 760,
+    "y": 1740,
+    "func": "// Compare UI data rather than _msgid, which changes on every status tick.\nif (!msg || !msg.payload) return null;\nconst snapshot = JSON.stringify(msg.payload);\nconst previous = context.get('lastSnapshot');\nif (msg._client || msg.payload.kind !== 'status') {\n    // Always answer explicit requests and save/editor events. If a reply changes\n    // one browser's view, let the next broadcast bring all views back in sync.\n    if (snapshot !== previous) context.set('lastSnapshot', null);\n    return msg;\n}\nif (previous === snapshot) return null;\ncontext.set('lastSnapshot', snapshot);\nreturn msg;\n",
+    "outputs": 1,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "wires": [
+      [
+        "sr-dashboard-template"
+      ]
+    ]
+  }
+]

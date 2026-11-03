@@ -1,0 +1,7 @@
+# Optional Linux USB/virtual MIDI access through ALSA.
+services:
+  node-red:
+    devices:
+      - /dev/snd/seq:/dev/snd/seq
+    group_add:
+      - "${MIDI_AUDIO_GID:-29}"
