@@ -30,12 +30,42 @@ docker compose -f docker-compose.yaml -f docker-compose.midi.yaml up -d --build
 
 This requires `/dev/snd/seq` on the host. If needed, set `MIDI_AUDIO_GID` to
 its group ID (`stat -c %g /dev/snd/seq`) in a local `.env` file.
-The default Compose configuration can open the dashboard without MIDI hardware;
-native USB MIDI access on macOS/Windows needs a separate host MIDI bridge.
+The default Compose configuration can open the dashboard without MIDI hardware.
 
 The custom image includes node-red-contrib-midi 1.1.2, FlowFuse Dashboard 1.34.1,
 and the ServoRack MIDI and connection nodes. MIDI device discovery and switching
 are handled by the backend; closing the browser does not stop heartbeats.
+
+## Native macOS development (Ableton / CoreMIDI)
+
+Docker Desktop's Linux VM has no ALSA/sound subsystem at all, so the
+Dockerized Node-RED can never see any MIDI device on macOS, hardware or
+virtual (including Ableton's IAC Driver or virtual ports) — even when Ableton
+runs on the same Mac. To develop against real MIDI input locally, run
+Node-RED natively instead, so `node-midi` links against CoreMIDI:
+
+```sh
+cd mac-dev
+npm install
+# If npm reports install scripts pending review (midi, core-js):
+npm install-scripts approve midi core-js
+npm install
+npm start
+```
+
+This builds the `midi` native addon against CoreMIDI, bootstraps a local
+`mac-dev/data` user directory with the same dashboard flow and `servorack`
+context store as the Docker image, and starts Node-RED at
+**http://localhost:1880/dashboard/servos**. Route Ableton's MIDI track output
+to a virtual port (enable the IAC Driver in Audio MIDI Setup, or let Ableton
+expose its own virtual port) and select it from the dashboard's MIDI input
+list. Requires Xcode Command Line Tools (`xcode-select --install`).
+
+This uses the same `bootstrap.cjs` and `flows.json` as the Docker image, so
+edits to those files apply to both. It can't run at the same time as the
+Docker stack (both bind port 1880); stop one before starting the other. If
+you also need MQTT locally, run `docker compose up -d mosquitto` separately
+and point Node-RED at `mqtt://localhost:1883`.
 
 ## Persistence and updates
 
