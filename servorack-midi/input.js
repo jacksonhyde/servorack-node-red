@@ -8,8 +8,22 @@ module.exports = function(RED) {
         let input=null, receiver=null, probe=null, generation=0, identity=null, ports=[], closed=false, receiverClosing=false;
         const stable = name => name.replace(/ \d+:\d+$/, '');
         let selected=flow.get('midiDevice','servorack') || '';
+        // A DAW can emit raw MIDI far faster than 50Hz (e.g. thousands/sec from an
+        // envelope clip), which can starve Node-RED's event loop and delay the
+        // heartbeat past the firmware's watchdog. Downstream flushing only ever
+        // uses the latest value per 20ms tick anyway, so coalesce to that rate here,
+        // keyed by status+data1 (channel/CC or note identity) so simultaneous
+        // controls (e.g. two axes) are each forwarded independently, not merged.
+        const THROTTLE_MS = 20;
+        const pending = new Map();
+        function flushPending() {
+            if (closed || !input || !pending.size) { pending.clear(); return; }
+            for (const raw of pending.values()) node.send([{payload:raw.slice(1),midi:{raw:raw.slice()}},null]);
+            pending.clear();
+        }
         function stop() {
             ++generation;
+            pending.clear();
             if (input) {
                 input.removeAllListeners('message');
                 // node-midi uses uv_close(), which completes in libuv's close phase.
@@ -24,7 +38,7 @@ module.exports = function(RED) {
         }
         function revoke() {
             const live=flow.get('wsMidiSource')==='oxygen';
-            flow.set('oxygenReady',false); flow.set('oxygenPending',{}); flow.set('oxygenLearn',null);
+            flow.set('oxygenReady',false); flow.set('oxygenPending',{}); flow.set('oxygenCurrent',{}); flow.set('oxygenLearn',null);
             if (live) { flow.set('wsMidiSource','monitor'); flow.set('wsHeartbeats',false); }
             node.send([null,{topic:'disarm'}]);
         }
@@ -42,7 +56,7 @@ module.exports = function(RED) {
                     const openedGeneration=generation;
                     try {
                         next.ignoreTypes(false,false,false);
-                        next.on('message',(_,raw)=>{ if (!closed && input===next && generation===openedGeneration) node.send([{payload:raw.slice(1),midi:{raw:raw.slice()}},null]); });
+                        next.on('message',(_,raw)=>{ if (!closed && input===next && generation===openedGeneration) pending.set(raw[0]+':'+raw[1], raw.slice()); });
                         input=next;
                         next.openPort(port.index); identity=port.name;
                         flow.set('wsMidiSource','oxygen'); flow.set('wsMidiRun',null);
@@ -67,7 +81,8 @@ module.exports = function(RED) {
             scan(); if(done)done();
         });
         const timer=setInterval(scan,250);
-        node.on('close',()=>{closed=true;clearInterval(timer);revoke();stop();if(probe)try{probe.closePort();}catch(_){} });
+        const throttleTimer=setInterval(flushPending,THROTTLE_MS);
+        node.on('close',()=>{closed=true;clearInterval(timer);clearInterval(throttleTimer);revoke();stop();if(probe)try{probe.closePort();}catch(_){} });
         scan();
     });
 };
